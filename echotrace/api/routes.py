@@ -114,7 +114,9 @@ async def settings_update(request: Request, payload: dict):
     s = services(request)
     old_settings = s.config.get(True)
     previous = old_settings["embedding"]
-    if "embedding" in payload and s.db.one("SELECT id FROM jobs WHERE kind='distill' AND status IN ('queued','running','paused')"):
+    embedding_patch = payload.get("embedding")
+    embedding_changed = isinstance(embedding_patch, dict) and {**previous, **embedding_patch} != previous
+    if embedding_changed and s.db.one("SELECT id FROM jobs WHERE kind='distill' AND status IN ('queued','running','paused')"):
         raise AppError("JOB_ALREADY_RUNNING", "请先完成或取消蒸馏，再更换嵌入配置。")
     result = s.config.update(payload)
     if previous != result["embedding"]:

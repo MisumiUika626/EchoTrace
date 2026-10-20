@@ -18,6 +18,20 @@ from echotrace.stats import calculate
 from echotrace.util import AppError, atomic_write, dumps, now, read_json, write_json
 
 
+def checkpoint_parameters(path, current, message):
+    saved = read_json(path)
+    if saved is not None:
+        # Output allowance can change without invalidating validated results.
+        # Keep the original identity so partial chunk fingerprints remain usable.
+        saved_identity = {key: value for key, value in saved.items() if key != "max_tokens"}
+        current_identity = {key: value for key, value in current.items() if key != "max_tokens"}
+        if saved_identity != current_identity:
+            raise AppError("RESUME_SETTINGS_CHANGED", message)
+        return saved
+    write_json(path, current)
+    return current
+
+
 def evidence_ids(value):
     ids = set()
     if isinstance(value, dict):
@@ -187,10 +201,8 @@ class Pipeline:
                           local_only=local_only)
         if not local_only:
             parameters["prompt"] = hashlib.sha256(self.llm.template("distill_skill").encode()).hexdigest()
-        saved_parameters = read_json(target / "parameters.json")
-        if saved_parameters and saved_parameters != parameters:
-            raise AppError("RESUME_SETTINGS_CHANGED", "Skill 检查点的模型或提示词已变化，请恢复设置或新建任务。")
-        write_json(target / "parameters.json", parameters)
+        parameters = checkpoint_parameters(target / "parameters.json", parameters,
+            "Skill 检查点的模型或提示词已变化，请恢复设置或新建任务。")
         self.jobs.progress(job_id, "本地重建 Skill 新版本" if local_only else "重跑 Skill 生成阶段", .3)
         persona, observations = read_json(target / "persona.json"), read_json(target / "observations.json")
         skill = read_json(target / "skill_model.json")
@@ -253,10 +265,8 @@ class Pipeline:
                                   ("distill_chunk", "extract_quotes", "distill_persona", "distill_radar", "distill_skill", "self_style")},
                       "tier": payload.get("tier", "standard")}
         parameters["radar_scales"] = self.config.get()["radar"]["scales"]
-        existing_params = read_json(target / "parameters.json")
-        if existing_params and existing_params != parameters:
-            raise AppError("RESUME_SETTINGS_CHANGED", "续跑参数与检查点不一致。请恢复原参数，或取消任务后新建蒸馏。")
-        write_json(target / "parameters.json", parameters)
+        parameters = checkpoint_parameters(target / "parameters.json", parameters,
+            "续跑参数与检查点不一致。请恢复原参数，或取消任务后新建蒸馏。")
         semaphore = asyncio.Semaphore(settings["concurrency"])
         completed = 0
         async def process(filename):

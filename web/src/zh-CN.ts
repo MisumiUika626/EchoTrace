@@ -48,6 +48,8 @@ export const t = {
   schedule: '每天自动备份', backupList: '定时备份', noBackups: '未设置定时备份',
   settingsTitle: '按你的方式，连接与保存', settingsSub: '设置保存在本机，修改后立即生效。密钥不会出现在日志或导出的 Skill 中。',
   modelService: '模型服务', baseUrl: 'Base URL', baseUrlHint: '填写包含 /v1 的 OpenAI 兼容接口基址', apiKey: 'API Key', temperature: '温度',
+  maxOutputTokens: '单次输出上限（token）', maxOutputTokensHint: '每次模型回复的上限，与整个任务的 token 预算分别计算。最高可设 393216（384K），实际不能超过服务商支持的上限；部分模型的思考也占用此额度。任务会按此上限预留预算。预算适配器会至少预留思考预算 + 4096 token。',
+  maxOutputTokensRange: '请输入 256–393216（384K）之间的整数。', adjustOutputLimit: '调整单次输出上限',
   adapter: '思考参数适配器', adapterEffort: 'reasoning_effort', adapterBudget: 'thinking.budget_tokens', adapterCustom: '自定义字段', adapterNone: '不发送思考参数',
   thinkingField: '实际参数字段', thinkingValues: '深度映射（JSON）', actual: '当前适配器实际发送的参数', actualHint: '不同服务商支持不同参数，Max 是否生效需以服务商接口为准。',
   save: '保存设置', saved: '已保存', testModel: '测试连接', modelTestNote: '此按钮只读取模型列表，不发送聊天内容。',

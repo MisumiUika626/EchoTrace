@@ -41,7 +41,7 @@ class ModelSettings(BaseModel):
     thinking_values: dict
     timeout: int = Field(ge=5, le=1800)
     concurrency: int = Field(ge=1, le=4)
-    max_tokens: int = Field(ge=256, le=65536)
+    max_tokens: int = Field(ge=256, le=393216)
 
 
 class PrivacySettings(BaseModel):

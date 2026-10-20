@@ -123,7 +123,10 @@ class LLMClient:
                         suffix = hashlib.sha256(dumps(context).encode()).hexdigest()[:12]
                         write_json(self.db.root / "review" / f"{job_id or now()}-{stage}-{suffix}.json",
                                    {"raw": raw, "needs_review": True, "error": "LLM_OUTPUT_TRUNCATED"})
-                        raise AppError("LLM_OUTPUT_TRUNCATED", "模型输出达到 max_tokens 上限被截断。请提高输出上限，或降低思考预算后继续；本次用量已记账。", 502)
+                        raise AppError("LLM_OUTPUT_TRUNCATED",
+                            f"模型单次输出达到 {request['max_tokens']:,} token 上限被截断。"
+                            "请到「设置 → 模型服务」提高「单次输出上限」并保存后继续，数值需符合服务商限制。"
+                            "增加任务总预算不能解决此次截断；本次用量已记账。", 502)
                     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
                     parsed = SCHEMAS[stage].model_validate(json.loads(cleaned)).model_dump()
                     self.validate_evidence(parsed, set(allowed_ids))
