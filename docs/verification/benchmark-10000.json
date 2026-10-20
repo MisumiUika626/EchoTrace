@@ -1,0 +1,10 @@
+{
+  "records": 10000,
+  "added": 10000,
+  "seconds": 0.797,
+  "peak_rss_mb": 66.93,
+  "python": "3.14.0",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "sqlite_vec": true,
+  "scope": "parse+clean+insert+FTS+stats"
+}

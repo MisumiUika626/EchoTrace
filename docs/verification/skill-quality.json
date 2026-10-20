@@ -1,0 +1,32 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "name": "心智模型数量       ✅ PASS  3个心智模型 ✅",
+      "passed": true
+    },
+    {
+      "name": "模型局限性        ✅ PASS  有局限性标注 ✅",
+      "passed": true
+    },
+    {
+      "name": "表达DNA辨识度     ✅ PASS  表达DNA特征: 7项 ✅",
+      "passed": true
+    },
+    {
+      "name": "诚实边界         ✅ PASS  诚实边界: 4条 ✅",
+      "passed": true
+    },
+    {
+      "name": "内在张力         ✅ PASS  内在张力: 5处 ✅",
+      "passed": true
+    },
+    {
+      "name": "一手来源占比       ✅ PASS  一手来源占比: 2/2 (100%) ✅",
+      "passed": true
+    }
+  ],
+  "output": "质量检查: SKILL.md\n==================================================\n  心智模型数量       ✅ PASS  3个心智模型 ✅\n  模型局限性        ✅ PASS  有局限性标注 ✅\n  表达DNA辨识度     ✅ PASS  表达DNA特征: 7项 ✅\n  诚实边界         ✅ PASS  诚实边界: 4条 ✅\n  内在张力         ✅ PASS  内在张力: 5处 ✅\n  一手来源占比       ✅ PASS  一手来源占比: 2/2 (100%) ✅\n==================================================\n结果: 6/6 通过\n🎉 全部通过，可以交付\n",
+  "checker": "本机女娲 quality_check.py",
+  "external": true
+}

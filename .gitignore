@@ -6,6 +6,9 @@ venv/
 
 # Secrets
 .env
+.env.*
+!.env.example
+.secrets.json
 
 # Private data
 data/private/
@@ -20,3 +23,27 @@ data/private/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local runtime, frontend and build products
+data/
+node_modules/
+web/dist/
+echotrace/static/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+playwright-report/
+test-results/
+.build-tmp/
+pip-build-*/
+pip-install-*/
+pip-ephem-*/
+pip-metadata-*/
+pip-unpack-*/
+pytest-of-*/
+*.tsbuildinfo
+*.log
+jieba.cache

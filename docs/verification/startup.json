@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "entry": "echotrace serve",
+  "empty_data_directory": true,
+  "database_created": true,
+  "static_assets_checked": 4,
+  "local_api": true,
+  "external_origin_rejected": true,
+  "browser_auto_open_tested": false,
+  "clean_machine_tested": false,
+  "health": {
+    "status": "ok",
+    "version": "0.1.0",
+    "llm": {
+      "configured": false,
+      "probed": false
+    },
+    "qce": {
+      "probed": false
+    },
+    "vectors": {
+      "sqlite_vec": true,
+      "provider": "local_hash"
+    },
+    "local_only": true
+  }
+}

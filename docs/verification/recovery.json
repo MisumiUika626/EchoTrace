@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "method": "kill child process after persisted map checkpoint; restart; explicit resume",
+  "fictional_messages": 5000,
+  "checkpoint_unchanged": true,
+  "model_calls_before_resume": 0,
+  "chunks": 12,
+  "map_calls_after_resume": 11
+}

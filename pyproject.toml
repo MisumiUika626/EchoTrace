@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=75,<81", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echotrace"
+version = "0.1.0"
+description = "本地优先的聊天归档、人物蒸馏与对话工作台"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<0.120", "uvicorn>=0.32,<1", "httpx>=0.28,<1",
+  "python-multipart>=0.0.20", "pydantic>=2.10,<3", "ijson>=3.3",
+  "openpyxl>=3.1", "beautifulsoup4>=4.12", "jieba>=0.42.1",
+  "sqlite-vec>=0.1.6", "websockets>=14", "regex>=2024.11",
+  "setuptools>=75,<81", # jieba 0.42.x imports pkg_resources at runtime
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "psutil>=6", "ruff>=0.9", "build>=1"]
+semantic = ["sentence-transformers>=3"]
+
+[project.scripts]
+echotrace = "echotrace.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["echotrace*"]
+
+[tool.setuptools.package-data]
+echotrace = ["db/*.sql", "templates/*.md", "static/**/*", "static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "fictional_messages": 5000,
+  "model_calls": 31,
+  "local_skill_rebuild": {
+    "version": 2,
+    "model_calls": 0
+  },
+  "settings_navigation_viewports": [
+    {
+      "width": 1280,
+      "height": 600
+    },
+    {
+      "width": 1024,
+      "height": 480
+    },
+    {
+      "width": 820,
+      "height": 400
+    },
+    {
+      "width": 390,
+      "height": 600
+    }
+  ],
+  "browser": "Microsoft Edge / Playwright",
+  "javascript_errors": [],
+  "http_5xx": [],
+  "external_browser_requests": 0,
+  "screenshots": [
+    "01-home.png",
+    "02-messages.png",
+    "03-persona.png",
+    "04-radar.png",
+    "05-skill.png",
+    "06-advice.png",
+    "07-qce-guide.png",
+    "08-mobile.png",
+    "09-settings-short-window.png"
+  ]
+}
