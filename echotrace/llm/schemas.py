@@ -149,3 +149,119 @@ class Chat(Record):
 SCHEMAS = {"distill_chunk": Chunk, "distill_persona": Persona, "distill_radar": Radar,
            "extract_quotes": Quotes, "distill_skill": Skill, "self_style": SelfStyle,
            "advise_top3": Advice, "chat_roleplay": Chat}
+
+
+class ResearchClaim(Claim):
+    source_kind: Literal["direct", "reported", "inference"]
+
+    @model_validator(mode="after")
+    def source_valid(self):
+        if self.source_kind == "inference" and not self.inferred:
+            raise ValueError("推测来源必须标明 inferred")
+        if self.source_kind == "reported" and not self.note.strip():
+            raise ValueError("转述须注明发言者与可信度限制")
+        return self
+
+
+class NuwaResearch(Record):
+    findings: list[ResearchClaim] = Field(max_length=16)
+    contradictions: list[ResearchClaim] = Field(max_length=6)
+    gaps: list[str]
+
+
+class Scenario(Record):
+    domain: str = Field(min_length=1)
+    evidence: list[int] = Field(min_length=1)
+
+
+class Candidate(MentalModel):
+    scenarios: list[Scenario]
+    generative: bool
+    generative_reason: str
+    distinctive: bool
+    distinctive_reason: str
+
+
+class NuwaSynthesis(Record):
+    candidates: list[Candidate] = Field(max_length=20)
+    heuristics: list[Claim] = Field(max_length=10)
+    expression: list[Claim]
+    values: list[Claim]
+    tensions: list[Claim]
+    lineage: list[Claim]
+    unknowns: list[str]
+
+
+class TestQuestion(Record):
+    id: str
+    question: str
+    expected: Claim
+
+
+class NuwaTestPlan(Record):
+    known: list[TestQuestion] = Field(max_length=3)
+    edge_question: str
+    voice_question: str
+
+    @model_validator(mode="after")
+    def unique_ids(self):
+        if len({q.id for q in self.known}) != len(self.known) or any(q.id in ("edge", "voice") for q in self.known):
+            raise ValueError("已知问题 ID 必须唯一且不能为 edge 或 voice")
+        return self
+
+
+class TestAnswer(Record):
+    id: str
+    text: str
+    evidence: list[int]
+    inferred: bool
+
+
+class NuwaResponses(Record):
+    answers: list[TestAnswer] = Field(min_length=2, max_length=5)
+
+
+class TestCheck(Record):
+    id: str
+    passed: bool
+    reason: str
+    evidence: list[int]
+
+
+class NuwaEvaluation(Record):
+    checks: list[TestCheck] = Field(min_length=2, max_length=5)
+    improvements: list[str]
+
+
+class ReviewScore(Record):
+    dimension: str
+    score: float = Field(ge=0, le=10)
+    reason: str
+
+
+class Suggestion(Record):
+    section: Literal["roles", "protocol", "boundaries"]
+    text: str = Field(min_length=1, max_length=1000)
+    reason: str
+
+
+class NuwaRefinement(Record):
+    perspective: Literal["optimizer", "creator"]
+    scores: list[ReviewScore]
+    dry_runs: list[str] = Field(max_length=3)
+    suggestions: list[Suggestion] = Field(max_length=3)
+
+
+class ProposalDecision(Record):
+    index: int = Field(ge=0, le=5)
+    accepted: bool
+    reason: str
+
+
+class NuwaIntegration(Record):
+    decisions: list[ProposalDecision] = Field(max_length=6)
+
+
+SCHEMAS.update(nuwa_research=NuwaResearch, nuwa_synthesize=NuwaSynthesis,
+               nuwa_test_plan=NuwaTestPlan, nuwa_respond=NuwaResponses,
+               nuwa_evaluate=NuwaEvaluation, nuwa_refine=NuwaRefinement, nuwa_integrate=NuwaIntegration)

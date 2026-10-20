@@ -1,10 +1,16 @@
 {
   "status": "passed",
   "fictional_messages": 5000,
-  "model_calls": 31,
+  "model_calls": 42,
   "local_skill_rebuild": {
     "version": 2,
     "model_calls": 0
+  },
+  "nuwa": {
+    "loaded_skill": "huashu-nuwa",
+    "research_dimensions": 6,
+    "independent_validation": true,
+    "mobile_report": "passed"
   },
   "settings_navigation_viewports": [
     {
@@ -37,6 +43,7 @@
     "06-advice.png",
     "07-qce-guide.png",
     "08-mobile.png",
-    "09-settings-short-window.png"
+    "09-settings-short-window.png",
+    "10-nuwa-mobile.png"
   ]
 }

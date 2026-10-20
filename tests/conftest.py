@@ -25,7 +25,8 @@ class FakeModel:
         if request.method == "GET":
             return httpx.Response(200, json={"data": [{"id": "fiction-model"}]})
         body = json.loads(request.content)
-        lines = [line for line in body["messages"][0]["content"].splitlines() if line.startswith("{")]
+        prompt = next(message["content"] for message in body["messages"] if message["role"] == "user")
+        lines = [line for line in prompt.splitlines() if line.startswith("{")]
         schema, context = json.loads(lines[0]), json.loads(lines[-1])
         stage = schema["title"]
         self.calls.append((stage, context, body))
@@ -48,6 +49,32 @@ class FakeModel:
             output = {"dimensions": [{"key": key, "model_score": context["stats"]["anchors"][key]["score"], "confidence": .7, "trend": "flat", "evidence": ids[:3], "interpretation": "虚构记录中的信号", "conflict_note": ""} for key in RADAR_KEYS]}
         elif stage == "Skill":
             output = {"models": [{**claim(ids), "name": f"观察模型{i}", "application": "只在有相似记录时使用", "limitation": "场景外证据不足"} for i in range(3)], "heuristics": [claim(ids, f"证据范围内的规则{i}") for i in range(5)]}
+        elif stage == "NuwaResearch":
+            reported = context["file"].startswith("04-")
+            target_ids = [m["id"] for m in context["evidence_messages"] if m["sender"] in ("them", "B")]
+            output = {"findings": [{**claim(target_ids), "source_kind": "reported" if reported else "direct", "note": "仅为聊天中的转述，未独立核实" if reported else ""}], "contradictions": [], "gaps": ["虚构数据仅验证流程，不代表真人特征"]}
+        elif stage == "NuwaSynthesis":
+            candidates = [{**claim(ids), "name": f"虚构模型{i}", "application": "先核查邀请与时间安排", "limitation": "没有相应证据就不适用",
+                           "scenarios": [{"domain": "出行安排", "evidence": ids[:1]}, {"domain": "工作安排", "evidence": ids[1:2]}],
+                           "generative": True, "generative_reason": "可预期未知安排前先确认条件", "distinctive": True, "distinctive_reason": "仅为虚构场景中的特定优先级"} for i in range(3)]
+            output = {"candidates": [] if context["summary_only"] else candidates,
+                      "heuristics": [] if context["summary_only"] else [claim(ids, f"虚构规则{i}") for i in range(5)],
+                      "expression": [claim(ids, "句式较短，先确认再回应；词汇与语气只依证据")], "values": [],
+                      "tensions": [] if context["summary_only"] else [claim(ids, "虚构情境中的张力一"), claim(ids, "虚构情境中的张力二")],
+                      "lineage": [], "unknowns": ["记录之外未知"]}
+        elif stage == "NuwaTestPlan":
+            output = {"known": [] if context["summary_only"] else [{"id": f"known{i}", "question": f"虚构已知问题{i}", "expected": claim(ids)} for i in range(1, 4)],
+                      "edge_question": "在没有记录的新情境中会如何判断？", "voice_question": "用约100字分析一个安排，不引用原话。"}
+        elif stage == "NuwaResponses":
+            voice = "我想先确认一下时间，再决定怎么安排。事情有几个条件没弄清楚，急着答应也不好。先把手头的事排一排，看看彼此方便的时段，留点余地。这样大家都轻松一些。如果临时有变化，再一起商量，不用现在就把所有事情定死。"
+            output = {"answers": [{"id": q["id"], "text": voice if q["id"] == "voice" else "这是框架推断，非本人立场；我不确定，先核查条件。", "evidence": [], "inferred": True} for q in context["questions"]]}
+        elif stage == "NuwaEvaluation":
+            output = {"checks": [{"id": a["id"], "passed": True, "reason": "虚构模型的固定流程判定，仅验证接口", "evidence": ids[:1]} for a in context["answers"]["answers"]], "improvements": []}
+        elif stage == "NuwaRefinement":
+            output = {"perspective": context["perspective"], "scores": [{"dimension": f"维度{i}", "score": 7, "reason": "虚构结构验证"} for i in range(8)],
+                      "dry_runs": ["虚构使用场景" for _ in range(3)], "suggestions": []}
+        elif stage == "NuwaIntegration":
+            output = {"decisions": [{"index": i, "accepted": True, "reason": "虚构整合判断"} for i in range(len(context["proposals"]))]}
         elif stage == "SelfStyle":
             output = {k: claim(ids) for k in ("sentence_length", "punctuation", "emoji", "rhythm")}
             output["catchphrases"] = []

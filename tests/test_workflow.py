@@ -168,7 +168,11 @@ async def test_skill_only_new_version_preserves_other_artifacts(app, imported, m
     calls = len(model.calls)
     result = await finish(s, s.jobs.create("distill", {"contact_id": cid, "consent": True, "token_limit": 500000, "skill_only": True, "base_version": 1}))
     assert result["result"]["version"] == 2
-    assert [stage for stage, _, _ in model.calls[calls:]] == ["Skill"]
+    stages = [stage for stage, _, _ in model.calls[calls:]]
+    assert stages.count("NuwaResearch") == 6
+    assert "NuwaSynthesis" in stages and "NuwaEvaluation" in stages
+    assert stages.count("NuwaRefinement") == 2
+    assert "Chunk" not in stages and "Persona" not in stages
     root = active_dir(s.db, cid)
     assert root != old
     assert all((root / name).read_bytes() == value for name, value in before.items())

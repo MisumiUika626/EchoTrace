@@ -26,7 +26,7 @@ echotrace = "echotrace.cli:main"
 include = ["echotrace*"]
 
 [tool.setuptools.package-data]
-echotrace = ["db/*.sql", "templates/*.md", "static/**/*", "static/*"]
+echotrace = ["db/*.sql", "templates/*.md", "templates/nuwa/*.md", "templates/nuwa/references/*.md", "templates/nuwa/LICENSE", "static/**/*", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

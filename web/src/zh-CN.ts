@@ -56,7 +56,7 @@ export const t = {
   advanced: '高级设置', cleanSystem: '过滤系统消息', mergeRepeats: '标记并折叠连续重复消息', truncate: '长文本显示上限', idleSetting: '停笔时显示求助提示',
   prompts: '运行时提示词', promptNote: '修改后立即生效，旧版保存在本机。保留 {{context}} 与 {{schema}}。', about: '关于与第三方声明',
   unknownError: '操作没有完成，请稍后重试。', offline: '无法连接本机服务，请确认 EchoTrace 正在运行。', noData: '暂无数据',
-  repeatExpand: '连续重复 · 展开原文', radarScales: '统计锚点映射系数', radarScaleNote: '调整后用于下次蒸馏；综合分仍按统计60%、模型40%计算。', rerunSkill: '重新调用模型生成 Skill', rerunSkillConfirm: '本次只重跑 Skill 阶段，会向模型服务商发送当前画像与证据摘要，并创建新版本。是否继续？',
+  repeatExpand: '连续重复 · 展开原文', radarScales: '统计锚点映射系数', radarScaleNote: '调整后用于下次蒸馏；综合分仍按统计60%、模型40%计算。', rerunSkill: '模型重跑完整女娲流程', rerunSkillConfirm: '本次模型将读取女娲 Skill 原文和参考材料，重跑六维研究、三重筛选、独立测试和双视角精炼，创建新版本；会向当前模型服务发送原蒸馏范围内的证据样本与上下文，基础12次请求，有精炼整合及复验时15次，每轮修复另加3次，最多2轮，预算50万 token。是否继续？',
   repeat: '连续重复，原始消息仍保留', mediaPlaceholder: '媒体占位 · 不读取内容、不上传文件', correctRole: '修正发言人', roleMapping: '昵称或身份', applyMapping: '应用并重算统计',
   activity: '对话足迹', added: '已加入语料库', installed: 'Skill 已安装', exported: '导出任务已创建', created: '任务已创建', selected: '已选中',
   relativeDays: '天前', today: '今天', quoteSource: '原话来源', consentNeeded: '请先勾选本次模型调用确认', deleteConfirm: '从语料库删除这条内容？聊天原文仍保留。',

@@ -45,6 +45,7 @@ class ImportStart(BaseModel):
 
 class DistillStart(BaseModel):
     consent: bool = False
+    nuwa_review: bool = False
     send_raw: bool = True
     model: str | None = None
     thinking: str | None = Field(default=None, pattern="^(low|medium|high|max)$")
@@ -352,7 +353,7 @@ async def skill_get(request: Request, cid: int):
     root = active_dir(services(request).db, cid)
     return ok({"markdown": (root / "skill" / "SKILL.md").read_text(encoding="utf-8"),
                "research": [{"name": name, "content": (root / "skill" / "references" / "research" / name).read_text(encoding="utf-8")} for name in FILES],
-               "quality": read_json(root / "skill_quality.json")})
+               "quality": read_json(root / "skill_quality.json"), "nuwa": read_json(root / "nuwa_report.json")})
 
 
 @router.get("/contacts/{cid}/skill/download")
@@ -378,6 +379,12 @@ async def skill_install(request: Request, cid: int, payload: dict):
 async def check_skill(request: Request, cid: int):
     root = active_dir(services(request).db, cid)
     result = await asyncio.to_thread(quality_check, root / "skill" / "SKILL.md")
+    report = read_json(root / "nuwa_report.json")
+    if report:
+        import hashlib
+        matches = hashlib.sha256((root / "skill" / "SKILL.md").read_bytes()).hexdigest() == report["validation"]["skill_sha256"]
+        result.update(semantic_passed=matches and report["status"] == "passed", nuwa_status=report["status"] if matches else "stale",
+                      validation=report["validation"]["checks"] if matches else [], semantic_note="当前内容与语义验证版本一致。" if matches else "Skill 已改变，需重跑语义验证。")
     write_json(root / "skill_quality.json", result)
     return ok(result)
 

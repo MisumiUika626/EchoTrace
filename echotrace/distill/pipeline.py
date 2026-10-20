@@ -10,6 +10,7 @@ from echotrace.distill.persona import person, read_quotes
 from echotrace.distill.quotes import validate_quotes
 from echotrace.distill.radar import score, timeline_events
 from echotrace.distill.skill_writer import write_skill
+from echotrace.distill.nuwa import NuwaWorkflow
 from echotrace.ingest.parsers import TZ
 from echotrace.llm.client import estimate_tokens
 from echotrace.rag.indexer import from_model, rebuild
@@ -60,10 +61,10 @@ class Pipeline:
     def estimate(self, cid, tier="standard"):
         row = self.db.one("SELECT msg_count FROM sessions WHERE contact_id=?", (cid,))
         n = row["msg_count"] if row else 0
-        tokens = max(100000, n * (60 if tier == "deep" else 40) + 80000)
+        tokens = max(300000, n * (60 if tier == "deep" else 40) + 280000)
         return {"messages": n, "estimated_tokens": tokens, "suggested_limit": int(tokens * 1.5),
                 "estimated_minutes": [max(2, n // 1000), max(5, n // 200)],
-                "note": "按消息量粗估；实际取决于文本长度、服务速度与重试。人民币费用请以服务商计费为准。"}
+                "note": "模型加载女娲 Skill 原文并执行六维研究、筛选、独立测试及双视角精炼；基础12次请求，有建议整合及复验时15次，每轮修复另加3次，最多2轮。实际依文本、重试与思考用量变化；费用以服务商为准。"}
 
     def prepare(self, cid, target, payload, stats):
         root = target / "inputs"
@@ -166,6 +167,9 @@ class Pipeline:
                 shutil.copytree(source, staging)
                 if not local_only:
                     (staging / "skill_model.json").unlink(missing_ok=True)
+                    shutil.rmtree(staging / "nuwa", ignore_errors=True)
+                    (staging / "nuwa_report.json").unlink(missing_ok=True)
+                    shutil.rmtree(staging / "skill" / "references" / "research", ignore_errors=True)
                 (staging / "parameters.json").unlink(missing_ok=True)
                 # Windows scanners may briefly hold the newly copied directory.
                 # Retry only this publication step; permanent access errors still fail.
@@ -192,20 +196,32 @@ class Pipeline:
         skill = read_json(target / "skill_model.json")
         if local_only and not skill:
             raise AppError("INCOMPLETE_ARTIFACTS", "历史版本缺少 Skill 结构数据，请重新蒸馏。")
-        if not skill:
-            skill = await self.llm.call("distill_skill", {"persona": persona, "observations": observations}, evidence_ids(observations), job_id, payload)
-            write_json(target / "skill_model.json", skill)
         skill_contact = {**contact, "display_name": "B", "slug": f"anonymous-{cid:x}"} if previous["summary_only"] else contact
-        quality = await asyncio.to_thread(write_skill, target, skill_contact, persona, skill, observations, read_json(target / "stats.json"), read_quotes(target))
+        if local_only:
+            quality = await asyncio.to_thread(write_skill, target, skill_contact, persona, skill, observations, read_json(target / "stats.json"), read_quotes(target))
+            report = read_json(target / "nuwa_report.json")
+            if report:
+                matches = hashlib.sha256((target / "skill" / "SKILL.md").read_bytes()).hexdigest() == report["validation"]["skill_sha256"]
+                if not matches:
+                    report.update(status="stale", note="本地重建后的 Skill 内容已变化，原语义验证不适用于此版本；使用模型重跑 Skill 重新验证。")
+                    write_json(target / "nuwa_report.json", report)
+                    write_json(target / "skill" / "references" / "nuwa-report.json", report)
+                quality.update(semantic_passed=matches and report["status"] == "passed", nuwa_status=report["status"],
+                               validation=report["validation"]["checks"] if matches else [])
+                write_json(target / "skill_quality.json", quality)
+        else:
+            skill, quality, report = await NuwaWorkflow(self.llm, self.jobs, job_id, payload, target, skill_contact,
+                persona, observations, read_json(target / "stats.json"), read_quotes(target), previous["summary_only"]).run()
         meta = {**previous, "version": version, "created_at": now(),
                 "model": previous["model"] if local_only else settings["model"],
                 "thinking": previous["thinking"] if local_only else settings["thinking"],
                 "tokens": self.jobs.get(job_id)["tokens"], "job_id": job_id, "skill_quality_passed": quality["passed"], "skill_only": True, "base_version": payload["base_version"]}
         meta["local_only"] = local_only
+        meta["nuwa_status"] = report["status"] if report else "legacy"
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
         await asyncio.to_thread(self.publish, cid, target, meta)
-        return {"contact_id": cid, "version": version, "quality": quality, "skill_only": True}
+        return {"contact_id": cid, "version": version, "quality": quality, "skill_only": True, "nuwa_status": meta["nuwa_status"]}
 
     async def _run(self, job_id, payload):
         cid = payload["contact_id"]
@@ -260,7 +276,12 @@ class Pipeline:
                         for ob in output["observations"]:
                             if ob["quote"] and not any(ob["quote"] in lookup[mid]["text"] for mid in ob["evidence"] if mid in lookup):
                                 raise ValueError("观察中的引用不是证据消息的原文")
-                    observations = await self.llm.call("distill_chunk", {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw}, ids, job_id, payload, validate_observations)
+                    partial = target / "chunks" / (filename + ".observations.json")
+                    saved = read_json(partial)
+                    observations = saved["output"] if saved and saved["fingerprint"] == fingerprint else None
+                    if observations is None:
+                        observations = await self.llm.call("distill_chunk", {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw}, ids, job_id, payload, validate_observations)
+                        write_json(partial, {"fingerprint": fingerprint, "output": observations})
                     quotes = await self.llm.call("extract_quotes", {"messages": messages, "target": "them"}, ids, job_id, payload,
                                                  lambda x: validate_quotes(x, messages)) if send_raw else {"quotes": []}
                     result = {"observations": observations["observations"], "quotes": quotes["quotes"]}
@@ -296,17 +317,17 @@ class Pipeline:
                                   lambda x: score(x, stats, recent))
         radar = score(radar_model, stats, recent)
         write_json(target / "radar.json", radar)
-        skill = await stage("distill_skill", "skill_model.json", {"persona": persona, "observations": observations}, ids, .77)
         self_messages = manifest["self_examples"]
-        await stage("self_style", "self_style.json", {"messages": self_messages if send_raw else summary_messages(self_messages)}, {m["id"] for m in self_messages}, .81)
+        await stage("self_style", "self_style.json", {"messages": self_messages if send_raw else summary_messages(self_messages)}, {m["id"] for m in self_messages}, .72)
         raw_quotes = [q for chunk in chunks for q in chunk["quotes"]]
         quotes = await asyncio.to_thread(from_model, self.db, cid, raw_quotes)
         unique = {q["id"]: q for q in quotes}
         quotes = sorted(unique.values(), key=lambda q: q["score"], reverse=True)[:min(2000, max(1, round(stats["total"] * .03)))]
         atomic_write(target / "quotes.jsonl", "".join(dumps(q) + "\n" for q in quotes))
         skill_contact = contact if send_raw else {**contact, "display_name": "B", "slug": f"anonymous-{cid:x}"}
-        quality = await asyncio.to_thread(write_skill, target, skill_contact, persona, skill, observations, stats, quotes)
-        self.jobs.progress(job_id, "生成月度趋势与本地索引", .88)
+        skill, quality, report = await NuwaWorkflow(self.llm, self.jobs, job_id, payload, target, skill_contact,
+            persona, observations, stats, quotes, not send_raw).run()
+        self.jobs.progress(job_id, "生成月度趋势与本地索引", .94)
         monthly = []
         for month in sorted(stats["months"]):
             dt = datetime.strptime(month, "%Y-%m").replace(tzinfo=TZ)
@@ -325,7 +346,7 @@ class Pipeline:
                                             "note": "月度与区间曲线为本地统计锚点；近期范围截至该版本最后一条记录。事件日期取证据消息日期。"})
         meta = {"version": version, "source_count": manifest["source_count"], "source_revision": contact["revision"], "sampled": manifest["sampled"], "created_at": now(),
                 "model": settings["model"], "thinking": settings["thinking"], "tokens": self.jobs.get(job_id)["tokens"],
-                "summary_only": not send_raw, "skill_quality_passed": quality["passed"], "job_id": job_id}
+                "summary_only": not send_raw, "skill_quality_passed": quality["passed"], "job_id": job_id, "nuwa_status": report["status"]}
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
         await asyncio.to_thread(self.publish, cid, target, meta)

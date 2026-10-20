@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -8,6 +9,7 @@ import httpx
 from pydantic import ValidationError
 
 from echotrace.llm.schemas import SCHEMAS
+from echotrace.llm.nuwa_skill import nuwa_instructions
 from echotrace.util import AppError, dumps, now, write_json
 
 
@@ -83,8 +85,10 @@ class LLMClient:
     async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None):
         settings = self.settings(override)
         prompt = self.render(stage, context)
+        instruction = nuwa_instructions(stage)
+        initial_messages = ([{"role": "system", "content": instruction}] if instruction else []) + [{"role": "user", "content": prompt}]
         request = {"model": settings["model"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
-                   "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": prompt}], **adapter_parameters(settings)}
+                   "response_format": {"type": "json_object"}, "messages": initial_messages, **adapter_parameters(settings)}
         if settings["adapter"] == "budget":
             request["max_tokens"] = max(request["max_tokens"], request["thinking"]["budget_tokens"] + 4096)
         last_error, raw = "", ""
@@ -111,10 +115,15 @@ class LLMClient:
                     body = response.json()
                     raw = body["choices"][0]["message"]["content"] or ""
                     usage = body.get("usage", {})
-                    input_n = usage.get("prompt_tokens", estimate_tokens(prompt))
+                    input_n = usage.get("prompt_tokens", estimate_tokens(initial_messages))
                     output_n = usage.get("completion_tokens", estimate_tokens(raw))
                     self.db.execute("INSERT INTO token_usage(job_id,model,stage,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?)",
                                     (job_id, settings["model"], stage, input_n, output_n, usage.get("total_tokens", input_n + output_n), now()))
+                    if body["choices"][0].get("finish_reason") == "length":
+                        suffix = hashlib.sha256(dumps(context).encode()).hexdigest()[:12]
+                        write_json(self.db.root / "review" / f"{job_id or now()}-{stage}-{suffix}.json",
+                                   {"raw": raw, "needs_review": True, "error": "LLM_OUTPUT_TRUNCATED"})
+                        raise AppError("LLM_OUTPUT_TRUNCATED", "模型输出达到 max_tokens 上限被截断。请提高输出上限，或降低思考预算后继续；本次用量已记账。", 502)
                     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
                     parsed = SCHEMAS[stage].model_validate(json.loads(cleaned)).model_dump()
                     self.validate_evidence(parsed, set(allowed_ids))
@@ -122,12 +131,23 @@ class LLMClient:
                         validator(parsed)
                     return parsed
                 except AppError as exc:
+                    if exc.code == "LLM_OUTPUT_TRUNCATED":
+                        raise
                     if exc.code in ("LLM_AUTH_FAILED", "LLM_REQUEST_FAILED") and (response.status_code < 500):
                         raise
                     last_error = exc.message
                 except (ValueError, KeyError, TypeError, ValidationError) as exc:
-                    last_error = "模型输出的结构或证据校验失败。"
-                    request["messages"] = [{"role": "user", "content": prompt}, {"role": "assistant", "content": raw},
+                    if isinstance(exc, ValidationError):
+                        first = exc.errors(include_input=False)[0]
+                        detail = ".".join(map(str, first["loc"])) + ": " + first["type"]
+                    elif isinstance(exc, json.JSONDecodeError):
+                        detail = f"JSON 无效（行 {exc.lineno}，列 {exc.colno}）"
+                    elif type(exc) is ValueError:
+                        detail = str(exc)[:220]
+                    else:
+                        detail = type(exc).__name__
+                    last_error = "模型输出校验失败：" + detail
+                    request["messages"] = initial_messages + [{"role": "assistant", "content": raw},
                                            {"role": "user", "content": "校验失败，请按 schema 重新完整输出 JSON，引用只能使用已给出的证据 ID。错误：" + str(exc)[:1400]}]
                 except httpx.HTTPError:
                     last_error = "无法连接模型服务，请检查网络和服务地址；数据仍保存在本机。"
@@ -138,7 +158,8 @@ class LLMClient:
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
         if raw:
-            write_json(self.db.root / "review" / f"{job_id or now()}-{stage}.json", {"raw": raw, "needs_review": True, "error": last_error})
+            suffix = hashlib.sha256(dumps(context).encode()).hexdigest()[:12]
+            write_json(self.db.root / "review" / f"{job_id or now()}-{stage}-{suffix}.json", {"raw": raw, "needs_review": True, "error": last_error})
         raise AppError("LLM_OUTPUT_INVALID" if raw else "LLM_UNREACHABLE", last_error + " 可修正设置或模板后重试。", 502)
 
     async def test(self):

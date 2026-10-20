@@ -32,6 +32,10 @@ class JobManager:
     def progress(self, job_id, stage, progress, **extra):
         self.check(job_id)
         self.db.execute("UPDATE jobs SET stage=?,progress=?,updated_at=? WHERE id=?", (stage, max(0, min(1, progress)), now(), job_id))
+        if extra:
+            result = self.get(job_id)["result"] or {}
+            result.update(extra)
+            self.db.execute("UPDATE jobs SET result=? WHERE id=?", (dumps(result), job_id))
 
     def update_payload(self, job_id, **fields):
         payload = self.get(job_id)["payload"]
@@ -72,6 +76,10 @@ class JobManager:
             raise AppError("INVALID_JOB_STATE", "只有暂停、失败或取消的任务可以继续。")
         if extra_budget:
             self.update_payload(job_id, token_limit=job["payload"].get("token_limit", 200000) + max(0, int(extra_budget)))
+        pending = job["payload"].get("nuwa_pending")
+        if pending:
+            approved = job["payload"].get("nuwa_approved", [])
+            self.update_payload(job_id, nuwa_approved=list(dict.fromkeys(approved + [pending])), nuwa_pending=None)
         try:
             self.db.execute("UPDATE jobs SET status='queued',error=NULL,stage='等待继续',updated_at=? WHERE id=?", (now(), job_id))
         except sqlite3.IntegrityError as exc:

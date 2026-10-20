@@ -92,8 +92,16 @@ def main():
             page.get_by_label("搜索重要话语与共同记忆…").fill(quote[:4])
             expect(page.locator(".quote-card").first).to_be_visible()
             page.locator(".tabs").get_by_role("button", name="人物 Skill").click()
-            expect(page.locator(".quality-row")).to_have_count(6)
+            expect(page.locator(".quality-panel .quality-row")).to_have_count(6)
             expect(page.locator(".quality-panel .badge")).to_contain_text("通过")
+            expect(page.locator(".nuwa-report")).to_be_visible()
+            expect(page.locator(".nuwa-report tbody tr")).to_have_count(6)
+            expect(page.locator(".nuwa-report")).to_contain_text("女娲 Skill 原文")
+            expect(page.locator(".nuwa-report")).to_contain_text("独立验证")
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth+1"), "Mobile Skill report overflow"
+            page.screenshot(path=str(output / "10-nuwa-mobile.png"), full_page=True)
+            page.set_viewport_size({"width": 1440, "height": 1000})
             calls_before_rebuild = len(model.calls)
             page.get_by_role("button", name="本地重建为新版本", exact=True).click()
             expect(page.locator('.job-card')).to_have_count(3)
@@ -101,7 +109,7 @@ def main():
             assert len(model.calls) == calls_before_rebuild, "Local Skill rebuild contacted the model"
             page.locator('.job-card').filter(has_text="人物蒸馏").first.get_by_role("button", name="查看人物").click()
             page.locator(".tabs").get_by_role("button", name="人物 Skill").click()
-            expect(page.locator(".quality-row")).to_have_count(6)
+            expect(page.locator(".quality-panel .quality-row")).to_have_count(6)
             expect(page.locator(".quality-panel .badge")).to_contain_text("通过")
             page.screenshot(path=str(output / "05-skill.png"), full_page=True)
             page.locator(".tabs").get_by_role("button", name="对话求助").click()
@@ -154,6 +162,7 @@ def main():
         assert all(url.startswith(f"http://127.0.0.1:{port}") for url in requests), requests
         result = {"status": "passed", "fictional_messages": 5000, "model_calls": len(model.calls),
                   "local_skill_rebuild": {"version": 2, "model_calls": 0},
+                  "nuwa": {"loaded_skill": "huashu-nuwa", "research_dimensions": 6, "independent_validation": True, "mobile_report": "passed"},
                   "settings_navigation_viewports": navigation_viewports,
                   "browser": "Microsoft Edge / Playwright", "javascript_errors": errors,
                   "http_5xx": failed_http, "external_browser_requests": 0,
