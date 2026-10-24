@@ -22,8 +22,8 @@ def citation_ids(markdown):
     These are candidate IDs only. Callers must intersect them with the current
     version's scoped evidence index before using them as an allowlist.
     """
-    groups = re.findall(r"(?<![\w])evidence:[ \t]*([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)(?=[ \t]*(?:[）)\r\n]|$))", markdown)
-    return {int(mid.strip()) for group in groups for mid in group.split(",")}
+    groups = re.findall(r"(?<![\w])evidence:[ \t]*((?:m[0-9]{6}|[0-9]+)(?:[ \t]*,[ \t]*(?:m[0-9]{6}|[0-9]+))*)(?=[ \t]*(?:[）)\r\n]|$))", markdown)
+    return {mid if mid.startswith("m") else int(mid) for group in groups for raw in group.split(",") if (mid := raw.strip())}
 
 
 def describe(item):

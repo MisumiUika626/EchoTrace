@@ -452,3 +452,60 @@ async def test_import_job_forwards_encoding_and_source_provenance(tmp_path: Path
     assert result == {"ok": True}
     assert captured["args"][8] == "gbk"
     assert captured["args"][9] == source_meta
+
+
+def test_pipeline_prepare_uses_source_order_and_stable_evidence_ids(tmp_path: Path):
+    from echotrace.distill.pipeline import Pipeline
+    from echotrace.ingest.cleaner import import_files
+    from echotrace.stats import calculate
+    from echotrace.util import read_json
+
+    path = tmp_path / "source-order.jsonl"
+    rows = [
+        {"msgId": str(index), "timestamp": 1000 - index,
+         "sender": {"uid": "me" if index % 2 else "them", "name": "我" if index % 2 else "对方"},
+         "content": f"源顺序 {index}"}
+        for index in range(1, 201)
+    ]
+    _jsonl(path, rows)
+    db, config = _store(tmp_path)
+    result = import_files(db, config, [path], "对方", "them", ["me"])
+    target = tmp_path / "version"
+
+    manifest = Pipeline(db, config, None, None).prepare(
+        result["contact_id"], target, {"tier": "deep"}, calculate(db, result["contact_id"])
+    )
+    messages = [message for filename in manifest["chunks"] for message in read_json(target / "inputs" / filename)]
+
+    assert [message["id"] for message in messages[:3]] == ["m000001", "m000002", "m000003"]
+    assert [message["text"] for message in messages[:3]] == ["源顺序 1", "源顺序 2", "源顺序 3"]
+
+
+def test_evidence_index_accepts_string_ids_and_preserves_excerpt_identity(tmp_path: Path):
+    from echotrace.distill.evidence import EvidenceIndex
+    from echotrace.util import write_json
+
+    target = tmp_path / "evidence-version"
+    message = {"id": "m000001", "sender": "them", "ts": 1, "text": "甲" * 1400, "kind": "text"}
+    write_json(target / "manifest.json", {"chunks": ["00000.json"], "total": 1, "sampled": 1})
+    write_json(target / "inputs/00000.json", [message])
+    write_json(target / "chunks/00000.json", {"observations": [{
+        "value": "长消息", "dimension": "expression_dna", "evidence": ["m000001"],
+        "quote": "甲" * 10, "inferred": False, "confidence": .8, "note": "",
+    }]})
+
+    index = EvidenceIndex(target)
+    index.build()
+    packet = index.packet(False)
+
+    assert index.messages({"m000001"})[0]["id"] == "m000001"
+    assert packet["evidence_messages"][0]["id"] == "m000001"
+    assert packet["evidence_messages"][0]["source_characters"] == 1400
+
+
+def test_claim_schema_accepts_stable_string_evidence_ids():
+    from echotrace.llm.schemas import Claim
+
+    claim = Claim(value="可回查观察", evidence=["m000001"], inferred=False, confidence=.8)
+
+    assert claim.evidence == ["m000001"]

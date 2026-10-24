@@ -47,7 +47,7 @@ def corpus_packet(target, observations, summary_only):
     for filename in manifest["chunks"]:
         for message in read_json(target / "inputs" / filename):
             lookup[message["id"]] = message
-    ordered = sorted(lookup.values(), key=lambda m: (m["ts"], m["id"]))
+    ordered = sorted(lookup.values(), key=lambda m: (m.get("sequence", 0), m["id"]))
     # Round-robin over time avoids spending the evidence allowance on one period.
     stride = max(1, len(observations) // 70)
     obs = limited(observations[::stride], 5000)
@@ -57,7 +57,7 @@ def corpus_packet(target, observations, summary_only):
         if message["id"] in source_ids:
             relevant.update(m["id"] for m in ordered[max(0, index-1):index+2])
     selected = [m for m in ordered if m["id"] in source_ids] + [m for m in ordered if m["id"] in relevant - source_ids]
-    messages = sorted(limited(selected, 6500), key=lambda m: (m["ts"], m["id"]))
+    messages = sorted(limited(selected, 6500), key=lambda m: (m.get("sequence", 0), m["id"]))
     allowed = {m["id"] for m in messages}
     obs = [x for x in obs if ids_in(x) <= allowed]
     if summary_only:

@@ -36,8 +36,8 @@ class EvidenceIndex:
         with closing(sqlite3.connect(staging)) as conn, conn:
             conn.executescript("""
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
-                CREATE TABLE messages(id INTEGER PRIMARY KEY, ts INTEGER, payload TEXT);
-                CREATE INDEX message_time ON messages(ts,id);
+                CREATE TABLE messages(id TEXT PRIMARY KEY, sequence INTEGER, ts INTEGER, payload TEXT);
+                CREATE INDEX message_sequence ON messages(sequence,id);
                 CREATE TABLE observations(id TEXT PRIMARY KEY, dimension TEXT, period TEXT, ts INTEGER, payload TEXT);
                 CREATE INDEX observation_group ON observations(dimension,period,ts,id);
             """)
@@ -45,8 +45,9 @@ class EvidenceIndex:
                 check()
                 messages = read_json(self.target / "inputs" / filename)
                 lookup = {m["id"]: m for m in messages}
-                conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?)",
-                                 ((m["id"], m["ts"], dumps(m)) for m in messages))
+                conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?,?)",
+                                 ((m["id"], m.get("sequence", index), m["ts"], dumps(m))
+                                  for index, m in enumerate(messages)))
                 chunk = read_json(self.target / "chunks" / filename)
                 for item in chunk["observations"]:
                     ts = min(lookup[mid]["ts"] for mid in item["evidence"])
@@ -95,7 +96,7 @@ class EvidenceIndex:
                 batch = ids[offset:offset + 400]
                 result.extend(json.loads(payload) for (payload,) in conn.execute(
                     "SELECT payload FROM messages WHERE id IN (" + ",".join("?" for _ in batch) + ")", batch))
-        return sorted(result, key=lambda m: (m["ts"], m["id"]))
+        return sorted(result, key=lambda m: (m.get("sequence", 0), m["id"]))
 
     def packet(self, summary_only, dimensions=(), observation_budget=4000, message_budget=6500):
         observations = self.select(dimensions, observation_budget, 70)

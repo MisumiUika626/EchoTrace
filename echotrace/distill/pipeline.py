@@ -13,6 +13,7 @@ from echotrace.distill.nuwa import NuwaWorkflow
 from echotrace.distill.extraction import extract
 from echotrace.distill.evidence import EvidenceIndex
 from echotrace.ingest.parsers import TZ
+from echotrace.ingest.canonical import canonical_messages
 from echotrace.llm.client import estimate_tokens
 from echotrace.rag.indexer import from_model, rebuild
 from echotrace.stats import calculate
@@ -110,48 +111,47 @@ class Pipeline:
         interval = {"quick": 10, "standard": 5, "deep": 1}[payload.get("tier", "standard")]
         paths, chunk, tokens, previous_ts, count = [], [], 0, None, 0
         self_examples = []
-        session = self.db.one("SELECT id FROM sessions WHERE contact_id=?", (cid,))["id"]
-        sql, args = "SELECT id,ts,sender,text,kind FROM messages WHERE session_id=?", [session]
         scope = payload.get("scope") or {}
-        for key, comparator in (("start", ">="), ("end", "<=")):
-            if scope.get(key):
-                sql += f" AND ts{comparator}?"
-                args.append(int(scope[key]))
-        sql += " ORDER BY ts,id"
         def save_chunk(messages):
             filename = f"{len(paths):05d}.json"
             write_json(root / filename, messages)
             paths.append(filename)
-        with self.db.connect() as conn:
-            for offset, row in enumerate(conn.execute(sql, args)):
-                if offset % 256 == 0:
-                    check()
-                message = dict(row)
-                ts, text = message["ts"], message["text"]
-                mandatory = (datetime.fromtimestamp(ts, TZ).strftime("%Y-%m") == first_month or ts >= last_month
-                             or (previous_ts is not None and ts - previous_ts > 30 * 86400)
-                             or any(w in text for w in ("生气", "抱歉", "难过", "答应", "喜欢", "再见", "承诺")))
-                previous_ts = ts
-                if not mandatory and message["id"] % interval != 0:
-                    continue
-                count += 1
-                if message["sender"] == "me":
-                    if len(self_examples) < 120:
-                        self_examples.extend(bounded_examples([message]))
-                    elif message["id"] % 11 == 0:
-                        self_examples[count % 120] = message
-                cost = estimate_tokens(message)
-                if chunk and tokens + cost > 10000:
-                    save_chunk(chunk)
-                    overlap, overlap_tokens = [], 0
-                    for old in reversed(chunk):
-                        if overlap_tokens + estimate_tokens(old) > 300:
-                            break
-                        overlap.insert(0, old)
-                        overlap_tokens += estimate_tokens(old)
-                    chunk, tokens = overlap, overlap_tokens
-                chunk.append(message)
-                tokens += cost
+        messages = canonical_messages(self.db, cid)["messages"]
+        for offset, source in enumerate(messages):
+            if scope.get("start") and source["ts"] < int(scope["start"]):
+                continue
+            if scope.get("end") and source["ts"] > int(scope["end"]):
+                continue
+            if offset % 256 == 0:
+                check()
+            message = {"id": source["evidence_id"], "sequence": source["sequence"],
+                       "ts": source["ts"], "sender": source["sender"],
+                       "text": source["text"], "kind": source["kind"]}
+            ts, text = message["ts"], message["text"]
+            mandatory = (datetime.fromtimestamp(ts, TZ).strftime("%Y-%m") == first_month or ts >= last_month
+                         or (previous_ts is not None and ts - previous_ts > 30 * 86400)
+                         or any(w in text for w in ("生气", "抱歉", "难过", "答应", "喜欢", "再见", "承诺")))
+            previous_ts = ts
+            if not mandatory and message["sequence"] % interval != 0:
+                continue
+            count += 1
+            if message["sender"] == "me":
+                if len(self_examples) < 120:
+                    self_examples.extend(bounded_examples([message]))
+                elif message["sequence"] % 11 == 0:
+                    self_examples[count % 120] = message
+            cost = estimate_tokens(message)
+            if chunk and tokens + cost > 10000:
+                save_chunk(chunk)
+                overlap, overlap_tokens = [], 0
+                for old in reversed(chunk):
+                    if overlap_tokens + estimate_tokens(old) > 300:
+                        break
+                    overlap.insert(0, old)
+                    overlap_tokens += estimate_tokens(old)
+                chunk, tokens = overlap, overlap_tokens
+            chunk.append(message)
+            tokens += cost
         if chunk:
             save_chunk(chunk)
         if stats["total"] < 200:

@@ -40,7 +40,7 @@ def calculate(db, contact_id, start=None, end=None):
     previous, first, last, turn_count, night, total, media, latency_count = None, None, None, 0, 0, 0, 0, 0
     aliases, examples = defaultdict(list), defaultdict(list)
     with db.connect() as conn:
-        for row in conn.execute("SELECT id,sender,sender_raw,ts,kind,text FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY ts,id", args):
+        for row in conn.execute("SELECT evidence_id AS id,sender,sender_raw,ts,kind,text FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY ts,sequence", args):
             mid, speaker, name, ts, kind, text = row
             dt = datetime.fromtimestamp(ts, TZ)
             first = ts if first is None else first

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SECTIONS = ["identity", "language_dna", "emotion", "values", "interaction", "narrative", "advice", "unknowns"]
 RADAR_KEYS = ["affinity", "intimacy", "trust", "dependence", "initiative", "stability", "openness", "progression"]
+EvidenceId = str | int
 
 
 class Record(BaseModel):
@@ -12,7 +13,7 @@ class Record(BaseModel):
 
 class Claim(Record):
     value: str = Field(min_length=1, max_length=600)
-    evidence: list[int] = Field(min_length=1, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=12)
     inferred: bool
     confidence: float = Field(ge=0, le=1)
     note: str = Field(default="", max_length=400)
@@ -58,7 +59,7 @@ class Dimension(Record):
     model_score: float = Field(ge=0, le=100)
     confidence: float = Field(ge=0, le=1)
     trend: Literal["rising", "flat", "falling"]
-    evidence: list[int] = Field(min_length=3, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=3, max_length=12)
     interpretation: str
     conflict_note: str = ""
 
@@ -76,7 +77,7 @@ class Radar(Record):
 
 
 class Quote(Record):
-    evidence: list[int] = Field(min_length=1, max_length=7)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=7)
     text: str = Field(min_length=1, max_length=800)
     topic: str
     reuse: float = Field(ge=0, le=10)
@@ -119,7 +120,7 @@ class Option(Record):
     strategy: Literal["safe", "warm", "honest"]
     text: str = Field(min_length=1)
     why: str
-    evidence: list[int] = Field(min_length=1)
+    evidence: list[EvidenceId] = Field(min_length=1)
     predicted_reaction: str
     risk: Risk
     follow_up: str
@@ -142,7 +143,7 @@ class Advice(Record):
 
 class Chat(Record):
     text: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
     inferred: bool
 
 
@@ -171,7 +172,7 @@ class NuwaResearch(Record):
 
 class Scenario(Record):
     domain: str = Field(min_length=1)
-    evidence: list[int] = Field(min_length=1, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=12)
 
 
 class Candidate(MentalModel):
@@ -213,7 +214,7 @@ class NuwaTestPlan(Record):
 class TestAnswer(Record):
     id: str
     text: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
     inferred: bool
 
 
@@ -225,7 +226,7 @@ class TestCheck(Record):
     id: str
     passed: bool
     reason: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
 
 
 class NuwaEvaluation(Record):

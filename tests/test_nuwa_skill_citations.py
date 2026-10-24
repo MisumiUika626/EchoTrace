@@ -75,6 +75,12 @@ def test_citation_reader_matches_writer_and_ignores_unlabelled_or_malformed_numb
     assert citation_ids("没有引用") == set()
 
 
+def test_citation_reader_accepts_stable_string_evidence_ids():
+    markdown = "- 结论（evidence: m000001, m000042）\n"
+
+    assert citation_ids(markdown) == {"m000001", "m000042"}
+
+
 @pytest.mark.parametrize("resume", [False, True])
 async def test_rendered_skill_references_pass_and_legacy_failure_resumes_without_rebilling(app, model, tmp_path, no_retry_wait, resume):
     s = app.state
