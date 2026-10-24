@@ -41,6 +41,7 @@ class ImportStart(BaseModel):
     uid: str = Field(default="", max_length=200)
     me: list[str] = Field(min_length=1)
     pattern: str | None = None
+    encoding: str | None = None
 
 
 class DistillStart(BaseModel):
@@ -211,10 +212,11 @@ async def backup_delete(request: Request, bid: str):
 
 
 @router.post("/import/preview")
-async def import_preview(request: Request, files: list[UploadFile] = File(...), pattern: str | None = Form(None)):
+async def import_preview(request: Request, files: list[UploadFile] = File(...), pattern: str | None = Form(None),
+                         encoding: str | None = Form(None)):
     s = services(request)
     ids, paths = await save_uploads(s, files)
-    result = await asyncio.to_thread(preview, paths, pattern)
+    result = await asyncio.to_thread(preview, paths, pattern, encoding)
     return ok({**result, "upload_ids": ids})
 
 
@@ -227,7 +229,8 @@ async def import_paste(request: Request, payload: dict):
     upload_id = uuid.uuid4().hex
     path = s.db.root / "exports" / "uploads" / (upload_id + ".txt")
     atomic_write(path, text)
-    return ok({**await asyncio.to_thread(preview, [path], payload.get("pattern")), "upload_ids": [upload_id]})
+    return ok({**await asyncio.to_thread(preview, [path], payload.get("pattern"), payload.get("encoding")),
+               "upload_ids": [upload_id]})
 
 
 @router.post("/import/start")
@@ -238,10 +241,13 @@ async def import_start(request: Request, payload: ImportStart):
 
 
 @router.post("/import/file")
-async def import_file(request: Request, files: list[UploadFile] = File(...), name: str = Form(...), me: str = Form(...), uid: str = Form("")):
+async def import_file(request: Request, files: list[UploadFile] = File(...), name: str = Form(...), me: str = Form(...),
+                      uid: str = Form(""), encoding: str | None = Form(None)):
     s = services(request)
-    ids, paths = await save_uploads(s, files)
-    return ok(s.jobs.create("import", {"paths": paths, "name": name, "uid": uid, "me": [x.strip() for x in me.split(",") if x.strip()]}))
+    _ids, paths = await save_uploads(s, files)
+    return ok(s.jobs.create("import", {"paths": paths, "name": name, "uid": uid,
+                                       "me": [x.strip() for x in me.split(",") if x.strip()],
+                                       "encoding": encoding}))
 
 
 @router.get("/contacts")
@@ -275,7 +281,7 @@ async def messages(request: Request, cid: int, before_ts: int | None = None, bef
     if sender:
         conditions.append("m.sender=?")
         args.append(sender)
-    rows = s.db.rows("SELECT m.id,m.msg_id,m.ts,m.sender,m.sender_raw,m.kind,m.text,m.reply_to,m.flags FROM messages m JOIN sessions s ON s.id=m.session_id WHERE " + " AND ".join(conditions) + " ORDER BY m.ts DESC,m.id DESC LIMIT ?", (*args, limit))
+    rows = s.db.rows("SELECT m.id,m.msg_id,m.sequence,m.evidence_id,m.source_index,m.ts,m.sender,m.sender_raw,m.kind,m.text,m.reply_to,m.flags FROM messages m JOIN sessions s ON s.id=m.session_id WHERE " + " AND ".join(conditions) + " ORDER BY m.ts DESC,m.id DESC LIMIT ?", (*args, limit))
     for row in rows:
         row["flags"] = json.loads(row["flags"])
     return ok({"messages": rows[::-1], "next": {"before_ts": rows[-1]["ts"], "before_id": rows[-1]["id"]} if len(rows) == limit else None})
@@ -580,7 +586,12 @@ async def job_import(request: Request, job_id: str):
     if path.suffix.lower() == ".zip":
         raise AppError("IMPORT_PARSE_FAILED", "请先手动解压 ZIP，再导入其中的 JSONL 文件。")
     payload = job["payload"]
-    return ok(s.jobs.create("import", {"paths": [str(path)], "name": payload["name"], "uid": payload.get("uin") or payload.get("peer_uid", ""), "me": payload["me"]}))
+    result = job["result"] or {}
+    source_meta = {"kind": "qce", "task_id": payload.get("qce_task_id"), "partial": bool(result.get("partial")),
+                   "server_completeness_proven": False}
+    return ok(s.jobs.create("import", {"paths": [str(path)], "name": payload["name"],
+                                       "uid": payload.get("uin") or payload.get("peer_uid", ""),
+                                       "me": payload["me"], "source_meta": source_meta}))
 
 
 @router.post("/jobs/{job_id}/cancel")

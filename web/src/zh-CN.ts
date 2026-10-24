@@ -13,7 +13,7 @@ export const t = {
   source: '原文支撑', inferred: '模型推断', confidence: '置信度', unknowns: '矛盾与未知', noPersona: '对话已归档，等待进一步理解', noPersonaSub: '开始蒸馏后，这里将呈现有证据支撑的画像、关系信号与重要话语。',
   importTitle: '把对话带进来', importSub: '文件保存在本机；导入不会调用模型。', chooseFile: '选择文件', drop: '拖入聊天记录，或点击选择文件', batch: '支持批量选择 · 大型记录推荐 JSONL',
   fileMode: '本地文件', pasteMode: '粘贴文本', pastePlaceholder: '2026-01-01 12:00:00 我: 周末要去图书馆吗\n2026-01-01 12:01:00 林间: 好呀，下次一起去',
-  pattern: '自定义正则（可选）', patternHint: '命名组：ts、sender、text', preview: '解析并预览', parsing: '正在读取文件…', roleTitle: '确认谁是你',
+  importAdvanced: '编码与解析选项', encoding: 'TXT 编码（可选）', encodingHint: '自动判断有歧义时，请按导出文件实际编码选择', encodingAuto: '自动判断', pattern: '自定义正则（可选）', patternHint: '命名组：ts、sender、text', preview: '解析并预览', parsing: '正在读取文件…', roleTitle: '确认谁是你',
   roleSub: '勾选属于你的昵称或账号，其余发言归为对方。昵称变更可以多选。', name: '人物称呼', uid: '对方 QQ 号或唯一标识', uidHint: '重复导入时使用同一标识，记录会自动去重',
   samplePreview: '前 50 条预览', startImport: '确认并导入', uploading: '正在导入…', cancel: '取消', done: '完成', loading: '正在加载…', retry: '重试',
   distillTitle: '从对话中，慢慢读懂一个人', distillSub: '生成画像、关系雷达、人物 Skill 与重要话语库。所有判断都保留原始依据。',

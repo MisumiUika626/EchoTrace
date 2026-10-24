@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--file", type=Path)
     parser.add_argument("--name", default="")
     parser.add_argument("--me", default="")
+    parser.add_argument("--encoding", choices=["utf-8", "utf-8-sig", "gbk", "utf-16", "utf-16-le", "utf-16-be"])
     parser.add_argument("--contact", type=int)
     parser.add_argument("--uid", default="")
     parser.add_argument("--peer-uid", default="")
@@ -52,7 +53,9 @@ def main():
         from echotrace.ingest.cleaner import import_files
         from echotrace.util import dumps
         db = Database(args.data_dir)
-        result = import_files(db, Config(db), [args.file], args.name, args.uid or args.name, args.me.split(","))
+        result = import_files(
+            db, Config(db), [args.file], args.name, args.uid or args.name, args.me.split(","), encoding=args.encoding
+        )
         print(dumps(result))
         return
     if args.command in ("export", "distill"):
