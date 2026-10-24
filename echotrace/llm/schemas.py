@@ -7,15 +7,15 @@ RADAR_KEYS = ["affinity", "intimacy", "trust", "dependence", "initiative", "stab
 
 
 class Record(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", str_max_length=2000)
 
 
 class Claim(Record):
-    value: str = Field(min_length=1)
-    evidence: list[int] = Field(min_length=1)
+    value: str = Field(min_length=1, max_length=600)
+    evidence: list[int] = Field(min_length=1, max_length=12)
     inferred: bool
     confidence: float = Field(ge=0, le=1)
-    note: str = ""
+    note: str = Field(default="", max_length=400)
 
     @model_validator(mode="after")
     def inference_note(self):
@@ -26,25 +26,25 @@ class Claim(Record):
 
 class Observation(Claim):
     dimension: Literal["personality", "expression_dna", "emotion", "interests", "relationship", "events"]
-    quote: str
-    date: str
+    quote: str = Field(max_length=800)
+    date: str = Field(max_length=32)
 
 
 class Chunk(Record):
-    observations: list[Observation]
-    open_questions: list[str] = []
+    observations: list[Observation] = Field(max_length=24)
+    open_questions: list[str] = Field(default_factory=list, max_length=8)
 
 
 class Section(Record):
     key: str
     title: str
-    items: list[Claim]
+    items: list[Claim] = Field(max_length=6)
 
 
 class Persona(Record):
     sections: list[Section] = Field(min_length=8, max_length=8)
-    tensions: list[Claim] = []
-    unknowns: list[str]
+    tensions: list[Claim] = Field(default_factory=list, max_length=6)
+    unknowns: list[str] = Field(max_length=12)
 
     @model_validator(mode="after")
     def sections_valid(self):
@@ -58,7 +58,7 @@ class Dimension(Record):
     model_score: float = Field(ge=0, le=100)
     confidence: float = Field(ge=0, le=1)
     trend: Literal["rising", "flat", "falling"]
-    evidence: list[int] = Field(min_length=3)
+    evidence: list[int] = Field(min_length=3, max_length=12)
     interpretation: str
     conflict_note: str = ""
 
@@ -77,7 +77,7 @@ class Radar(Record):
 
 class Quote(Record):
     evidence: list[int] = Field(min_length=1, max_length=7)
-    text: str
+    text: str = Field(min_length=1, max_length=800)
     topic: str
     reuse: float = Field(ge=0, le=10)
     emotion: float = Field(ge=0, le=10)
@@ -88,13 +88,13 @@ class Quote(Record):
 
 
 class Quotes(Record):
-    quotes: list[Quote]
+    quotes: list[Quote] = Field(max_length=24)
 
 
 class MentalModel(Claim):
-    name: str
-    application: str
-    limitation: str
+    name: str = Field(max_length=100)
+    application: str = Field(max_length=400)
+    limitation: str = Field(max_length=300)
 
 
 class Skill(Record):
@@ -106,7 +106,7 @@ class SelfStyle(Record):
     sentence_length: Claim
     punctuation: Claim
     emoji: Claim
-    catchphrases: list[Claim]
+    catchphrases: list[Claim] = Field(max_length=8)
     rhythm: Claim
 
 
@@ -166,30 +166,30 @@ class ResearchClaim(Claim):
 class NuwaResearch(Record):
     findings: list[ResearchClaim] = Field(max_length=16)
     contradictions: list[ResearchClaim] = Field(max_length=6)
-    gaps: list[str]
+    gaps: list[str] = Field(max_length=12)
 
 
 class Scenario(Record):
     domain: str = Field(min_length=1)
-    evidence: list[int] = Field(min_length=1)
+    evidence: list[int] = Field(min_length=1, max_length=12)
 
 
 class Candidate(MentalModel):
-    scenarios: list[Scenario]
+    scenarios: list[Scenario] = Field(max_length=6)
     generative: bool
-    generative_reason: str
+    generative_reason: str = Field(max_length=300)
     distinctive: bool
-    distinctive_reason: str
+    distinctive_reason: str = Field(max_length=300)
 
 
 class NuwaSynthesis(Record):
-    candidates: list[Candidate] = Field(max_length=20)
+    candidates: list[Candidate] = Field(max_length=10)
     heuristics: list[Claim] = Field(max_length=10)
-    expression: list[Claim]
-    values: list[Claim]
-    tensions: list[Claim]
-    lineage: list[Claim]
-    unknowns: list[str]
+    expression: list[Claim] = Field(max_length=8)
+    values: list[Claim] = Field(max_length=8)
+    tensions: list[Claim] = Field(max_length=6)
+    lineage: list[Claim] = Field(max_length=6)
+    unknowns: list[str] = Field(max_length=12)
 
 
 class TestQuestion(Record):
@@ -230,7 +230,7 @@ class TestCheck(Record):
 
 class NuwaEvaluation(Record):
     checks: list[TestCheck] = Field(min_length=2, max_length=5)
-    improvements: list[str]
+    improvements: list[str] = Field(max_length=8)
 
 
 class ReviewScore(Record):
@@ -247,7 +247,7 @@ class Suggestion(Record):
 
 class NuwaRefinement(Record):
     perspective: Literal["optimizer", "creator"]
-    scores: list[ReviewScore]
+    scores: list[ReviewScore] = Field(max_length=10)
     dry_runs: list[str] = Field(max_length=3)
     suggestions: list[Suggestion] = Field(max_length=3)
 

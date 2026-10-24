@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -11,6 +12,24 @@ class AppError(Exception):
     def __init__(self, code: str, message: str, status: int = 400):
         self.code, self.message, self.status = code, message, status
         super().__init__(message)
+
+
+async def finish_thread(function, *args, **kwargs):
+    """Keep a cancelled job alive until its local worker stops writing files."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()  # Retrieve a worker failure before propagating cancellation.
+        raise
 
 
 def now() -> int:

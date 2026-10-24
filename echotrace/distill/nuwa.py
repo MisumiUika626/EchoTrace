@@ -9,6 +9,8 @@ import hashlib
 from echotrace.jobs import JobStopped
 from echotrace.llm.client import estimate_tokens
 from echotrace.llm.nuwa_skill import load_nuwa_skill
+from echotrace.distill.evidence import EvidenceIndex, DIMENSION_FILTERS
+from echotrace.distill.skill_writer import citation_ids
 from echotrace.util import AppError, atomic_write, dumps, now, read_json, write_json
 
 DIMENSIONS = [
@@ -119,6 +121,39 @@ def research_markdown(dimension, result):
     return "\n".join(lines) + "\n"
 
 
+def normalize_research_sources(output, messages):
+    """An explicitly labelled inference must not masquerade as primary evidence.
+
+    Only reconcile the source label when the model already supplied an
+    inference flag, its limitation, and known evidence. Never turn a direct
+    factual claim into an inference merely to pass the attribution check.
+    """
+    allowed = {m["id"] for m in messages}
+    corrections = []
+    for field in ("findings", "contradictions"):
+        for index, item in enumerate(output[field]):
+            if (item["source_kind"] == "direct" and item["inferred"] is True
+                    and item["note"].strip() and item["evidence"]
+                    and set(item["evidence"]) <= allowed):
+                corrections.append({"field": field, "index": index,
+                                    "original_source_kind": "direct", "source_kind": "inference",
+                                    "evidence": list(item["evidence"]),
+                                    "reason": "原条目已标明推断及限制，仅将来源类型从一手原话统一为研究推断。"})
+                item["source_kind"] = "inference"
+    return corrections
+
+
+def validate_research_sources(output, messages, filename):
+    lookup = {m["id"]: m for m in messages}
+    for item in output["findings"] + output["contradictions"]:
+        if not set(item["evidence"]) <= lookup.keys():
+            raise ValueError("研究证据必须来自本维度提供的原始消息")
+        if item["source_kind"] == "direct" and any(lookup[mid]["sender"] not in ("them", "B") for mid in item["evidence"]):
+            raise ValueError("一手观点只能引用目标本人发言；他人评价须标 reported")
+        if filename == "04-external-views.md" and item["source_kind"] == "direct":
+            raise ValueError("聊天里的他者评价不能冒充独立第三方来源；明确推断应标 inference，聊天转述应标 reported 并注明限制")
+
+
 class NuwaWorkflow:
     def __init__(self, llm, jobs, job_id, payload, target, person, persona, observations, stats, quotes, summary_only):
         self.llm, self.jobs, self.job_id, self.payload = llm, jobs, job_id, payload
@@ -127,18 +162,35 @@ class NuwaWorkflow:
         self.root = target / "nuwa"
         self.root.mkdir(exist_ok=True)
         self.semaphore = asyncio.Semaphore(llm.settings(payload)["concurrency"])
-        self.packet = corpus_packet(target, observations, summary_only)
+        self.index = EvidenceIndex(target)
+        previous = read_json(self.root / "parameters.json")
+        legacy_packet = read_json(target / "skill" / "references" / "evidence.json") if previous else None
+        # Resume earlier paid requests against their original immutable packet.
+        self.legacy = bool(previous and "dimension_packets_sha256" not in previous)
+        self.index.build(lambda: self.jobs.check(job_id))
+        self.packet = legacy_packet if self.legacy and legacy_packet else (
+            corpus_packet(target, observations, summary_only) if self.legacy else self.index.packet(summary_only))
+        self.dimension_packets = {} if self.legacy else {file: self.index.packet(summary_only, DIMENSION_FILTERS[file], 2000, 3500)
+                                                       for file, _ in DIMENSIONS}
         self.allowed = {m["id"] for m in self.packet["evidence_messages"]}
         self.research_dir = target / "skill" / "references" / "research"
         self.research_dir.mkdir(parents=True, exist_ok=True)
 
-    async def request(self, name, file, context, validator=None):
+    async def request(self, name, file, context, validator=None, *, normalizer=None):
         async with self.semaphore:
             self.jobs.check(self.job_id)
             cache = read_json(self.root / file)
             if cache is not None:
                 return cache
-            result = await self.llm.call(name, context, self.allowed, self.job_id, self.payload, validator)
+            if name == "nuwa_respond":
+                # The blind actor sees only Skill text and questions. Its IDs
+                # are embedded citations, not JSON evidence fields. Never use
+                # expected answers or the whole corpus to widen its allowlist.
+                cited = citation_ids(context["skill_markdown"])
+                allowed = {m["id"] for m in self.index.messages(cited)}
+            else:
+                allowed = ids_in(context) | {m["id"] for m in context.get("evidence_messages", [])}
+            result = await self.llm.call(name, context, allowed, self.job_id, self.payload, validator, normalizer=normalizer)
             write_json(self.root / file, result)
             return result
 
@@ -156,14 +208,12 @@ class NuwaWorkflow:
     async def research(self):
         self.jobs.progress(self.job_id, "女娲 · 六维本地语料调研", .74)
         async def dimension(filename, label):
+            packet = self.dimension_packets.get(filename, self.packet)
             def validate(result):
-                lookup = {m["id"]: m for m in self.packet["evidence_messages"]}
-                for item in result["findings"] + result["contradictions"]:
-                    if item["source_kind"] == "direct" and any(lookup[mid]["sender"] not in ("them", "B") for mid in item["evidence"]):
-                        raise ValueError("一手观点只能引用目标本人发言；他人评价须标 reported")
-                    if filename == "04-external-views.md" and item["source_kind"] == "direct":
-                        raise ValueError("聊天里的他者评价不能冒充独立第三方来源")
-            output = await self.request("nuwa_research", filename.replace(".md", ".json"), {**self.packet, "dimension": label, "file": filename}, validate)
+                validate_research_sources(result, packet["evidence_messages"], filename)
+            output = await self.request("nuwa_research", filename.replace(".md", ".json"),
+                                        {**packet, "dimension": label, "file": filename}, validate,
+                                        normalizer=lambda result: normalize_research_sources(result, packet["evidence_messages"]))
             atomic_write(self.research_dir / filename, research_markdown(label, output))
             return {"file": filename, "dimension": label, **output}
         tasks = [asyncio.create_task(dimension(*entry)) for entry in DIMENSIONS]
@@ -200,7 +250,7 @@ class NuwaWorkflow:
         # Crucially, the role player cannot see the expected answers or corpus.
         answers = await self.request("nuwa_respond", label + "-answers.json", {"skill_markdown": markdown, "questions": questions}, complete("answers"))
         evaluation = await self.request("nuwa_evaluate", label + "-evaluation.json",
-                                        {**self.packet, "research": self.research_data, "plan": plan, "answers": answers}, complete("checks"))
+                                        {**self.packet, "research": self.research_context, "plan": plan, "answers": answers}, complete("checks"))
         checks = list(evaluation["checks"])
         answer_map = {a["id"]: a for a in answers["answers"]}
         edge, voice = answer_map["edge"], answer_map["voice"]
@@ -237,19 +287,30 @@ class NuwaWorkflow:
                       "summary_only": self.summary_only, "sources": method_sources(),
                       "prompts": {k: hashlib.sha256(self.llm.template(k).encode()).hexdigest() for k in STAGES},
                       "packet_sha256": hashlib.sha256(dumps(self.packet).encode()).hexdigest()}
+        if not self.legacy:
+            parameters["dimension_packets_sha256"] = hashlib.sha256(dumps(self.dimension_packets).encode()).hexdigest()
         previous = read_json(self.root / "parameters.json")
         if previous and previous != parameters:
             raise AppError("NUWA_SETTINGS_CHANGED", "女娲阶段的提示词或证据已变化，请恢复设置或仅重跑 Skill 新版本；已有分片仍保留。")
         write_json(self.root / "parameters.json", parameters)
         write_json(self.target / "skill" / "references" / "evidence.json", self.packet)
+        if self.dimension_packets:
+            write_json(self.target / "skill" / "references" / "dimension-evidence.json", self.dimension_packets)
         research, summary = await self.research()
         self.research_data = research
-        context = {**self.packet, "research": research}
+        # Full research remains in six checkpoint files. Synthesis receives a
+        # bounded cross-dimension selection, with contradictions selected first.
+        self.research_context = research if self.legacy else [
+            {**entry, "contradictions": limited(entry["contradictions"], 800),
+             "findings": limited(entry["findings"], 1200), "gaps": limited(entry["gaps"], 200)} for entry in research]
+        context = {**self.packet, "research": self.research_context}
         def validate_plan(output):
             if self.summary_only and output["known"]:
                 raise ValueError("匿名统计无已知立场，不得构造已知问题")
             if any(q["expected"]["inferred"] for q in output["known"]):
                 raise ValueError("已知测试必须基于明确表态，不能使用推断")
+            if any(not set(q["expected"]["evidence"]) <= self.allowed for q in output["known"]):
+                raise ValueError("已知测试只能选择 evidence_messages 中可供独立评审复核的原话")
         plan = await self.request("nuwa_test_plan", "test-plan.json", context, validate_plan)
         rounds, best, feedback = [], None, []
         for iteration in range(3):

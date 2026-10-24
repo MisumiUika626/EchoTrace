@@ -21,11 +21,15 @@ def test_output_limit_can_be_saved_with_a_paused_job(app):
         for invalid in (255, 393217, 8192.5):
             assert client.put("/api/settings", json={"llm": {"max_tokens": invalid}}).status_code == 422
             assert s.config.get()["llm"]["max_tokens"] == 393216
+        assert client.put("/api/settings", json={"llm": {"context_window": 262144}}).status_code == 200
+        for invalid in (16383, 2097153, 131072.5):
+            assert client.put("/api/settings", json={"llm": {"context_window": invalid}}).status_code == 422
+            assert s.config.get()["llm"]["context_window"] == 262144
         changed = client.put("/api/settings", json={"embedding": {"provider": "local_model"}})
         assert changed.status_code == 400 and changed.json()["error"]["code"] == "JOB_ALREADY_RUNNING"
 
 
-@pytest.mark.parametrize("failed_stage,skill_only", [("Quotes", False), ("NuwaResearch", False), ("NuwaResearch", True)])
+@pytest.mark.parametrize("failed_stage,skill_only", [("NuwaResearch", False), ("NuwaResearch", True)])
 async def test_increasing_output_limit_retries_only_unfinished_requests(app, imported, model, failed_stage, skill_only):
     s = app.state
     cid, _ = imported
@@ -46,7 +50,7 @@ async def test_increasing_output_limit_retries_only_unfinished_requests(app, imp
             matches += 1
             if matches == 2:
                 failed_signature = signature
-        if signature == failed_signature and body["max_tokens"] < 393216:
+        if signature == failed_signature and body["max_tokens"] < 16384:
             result = response.json()
             result["choices"][0]["finish_reason"] = "length"
             return httpx.Response(200, json=result)
@@ -65,7 +69,7 @@ async def test_increasing_output_limit_retries_only_unfinished_requests(app, imp
     assert s.db.one("SELECT COUNT(*) AS n FROM token_usage WHERE job_id=?", (job["id"],))["n"] == len(model.calls) - calls_start
 
     target = next((s.db.root / "people").glob(f"*/versions/v{failed['payload']['version']}"))
-    for cap in (16384, 393216):
+    for cap in (12288, 16384):
         completed = {path: path.read_bytes() for pattern in ("chunks/*.json", "nuwa/0*.json") for path in target.glob(pattern)}
         assert completed
         already_successful, calls_before = successful.copy(), len(model.calls)
@@ -73,9 +77,10 @@ async def test_increasing_output_limit_retries_only_unfinished_requests(app, imp
         resumed = s.jobs.resume(job["id"])
         await s.jobs.tasks[resumed["id"]]
         result = s.jobs.get(job["id"])
-        assert result["status"] == ("failed" if cap == 16384 else "succeeded"), result
+        assert result["status"] == ("failed" if cap == 12288 else "succeeded"), result
         requests = model.calls[calls_before:]
-        assert requests and all(body["max_tokens"] == cap for _, _, body in requests)
+        assert requests and all(body["max_tokens"] <= cap for _, _, body in requests)
+        assert any(body["max_tokens"] == cap for _, _, body in requests)
         signatures = [(stage, dumps(context)) for stage, context, _ in requests]
         assert failed_signature in signatures
         assert not already_successful.intersection(signatures), "Completed request was billed again"

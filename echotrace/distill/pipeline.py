@@ -7,15 +7,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from echotrace.distill.persona import person, read_quotes
-from echotrace.distill.quotes import validate_quotes
 from echotrace.distill.radar import score, timeline_events
 from echotrace.distill.skill_writer import write_skill
 from echotrace.distill.nuwa import NuwaWorkflow
+from echotrace.distill.extraction import extract
+from echotrace.distill.evidence import EvidenceIndex
 from echotrace.ingest.parsers import TZ
 from echotrace.llm.client import estimate_tokens
 from echotrace.rag.indexer import from_model, rebuild
 from echotrace.stats import calculate
-from echotrace.util import AppError, atomic_write, dumps, now, read_json, write_json
+from echotrace.util import AppError, atomic_write, dumps, now, read_json, write_json, finish_thread
 
 
 def checkpoint_parameters(path, current, message):
@@ -52,7 +53,7 @@ def compact_observations(items, budget=22000):
     stride = max(1, len(items) // 250)
     ordered = items[::stride] + items
     for item in ordered:
-        key = item["value"]
+        key = (item["value"], item.get("date"), tuple(sorted(item.get("evidence", []))), item.get("dimension"))
         cost = estimate_tokens(item)
         if key in seen or used + cost > budget:
             continue
@@ -65,7 +66,22 @@ def compact_observations(items, budget=22000):
 def summary_messages(messages):
     # No original text, names, addresses or snippets leave the machine in summary mode.
     return [{"id": m["id"], "sender": "A" if m["sender"] == "me" else "B", "date": datetime.fromtimestamp(m["ts"], TZ).date().isoformat(),
-             "characters": len(m["text"]), "kind": m["kind"], "text": f"[匿名统计：{m['kind']}消息，{len(m['text'])}字]"} for m in messages]
+             "characters": m.get("source_characters", len(m["text"])), "kind": m["kind"],
+             "text": f"[匿名统计：{m['kind']}消息，{m.get('source_characters', len(m['text']))}字]"} for m in messages]
+
+
+def bounded_examples(messages, budget=5000):
+    selected, used = [], 0
+    for message in messages:
+        excerpt = {**message, "text": message["text"][:1000]}
+        if len(message["text"]) > 1000:
+            excerpt.update(fragment_offset=message.get("fragment_offset", 0),
+                           source_characters=message.get("source_characters", len(message["text"])))
+        cost = estimate_tokens(excerpt)
+        if used + cost <= budget:
+            selected.append(excerpt)
+            used += cost
+    return selected
 
 
 class Pipeline:
@@ -80,7 +96,7 @@ class Pipeline:
                 "estimated_minutes": [max(2, n // 1000), max(5, n // 200)],
                 "note": "模型加载女娲 Skill 原文并执行六维研究、筛选、独立测试及双视角精炼；基础12次请求，有建议整合及复验时15次，每轮修复另加3次，最多2轮。实际依文本、重试与思考用量变化；费用以服务商为准。"}
 
-    def prepare(self, cid, target, payload, stats):
+    def prepare(self, cid, target, payload, stats, check=lambda: None):
         root = target / "inputs"
         root.mkdir(parents=True, exist_ok=True)
         existing = read_json(target / "manifest.json")
@@ -107,7 +123,9 @@ class Pipeline:
             write_json(root / filename, messages)
             paths.append(filename)
         with self.db.connect() as conn:
-            for row in conn.execute(sql, args):
+            for offset, row in enumerate(conn.execute(sql, args)):
+                if offset % 256 == 0:
+                    check()
                 message = dict(row)
                 ts, text = message["ts"], message["text"]
                 mandatory = (datetime.fromtimestamp(ts, TZ).strftime("%Y-%m") == first_month or ts >= last_month
@@ -119,7 +137,7 @@ class Pipeline:
                 count += 1
                 if message["sender"] == "me":
                     if len(self_examples) < 120:
-                        self_examples.append(message)
+                        self_examples.extend(bounded_examples([message]))
                     elif message["id"] % 11 == 0:
                         self_examples[count % 120] = message
                 cost = estimate_tokens(message)
@@ -145,10 +163,11 @@ class Pipeline:
         return manifest
 
     async def run(self, job_id, payload):
-        async with asyncio.timeout(1800):
-            if payload.get("skill_only"):
-                return await self._run_skill(job_id, payload)
-            return await self._run(job_id, payload)
+        # Long jobs use per-request timeouts and durable checkpoints. A healthy
+        # 500K-message run must not expire just because 30 minutes have elapsed.
+        if payload.get("skill_only"):
+            return await self._run_skill(job_id, payload)
+        return await self._run(job_id, payload)
 
     async def _run_skill(self, job_id, payload):
         cid = payload["contact_id"]
@@ -195,7 +214,7 @@ class Pipeline:
                         if attempt == 5:
                             raise
                         time.sleep(delay)
-            await asyncio.to_thread(copy_source)
+            await finish_thread(copy_source)
         parameters = {} if local_only else {key: settings[key] for key in ("model", "thinking", "base_url", "adapter", "thinking_values", "thinking_field", "temperature", "max_tokens")}
         parameters.update(base_version=payload["base_version"], skill_only=True,
                           local_only=local_only)
@@ -210,7 +229,7 @@ class Pipeline:
             raise AppError("INCOMPLETE_ARTIFACTS", "历史版本缺少 Skill 结构数据，请重新蒸馏。")
         skill_contact = {**contact, "display_name": "B", "slug": f"anonymous-{cid:x}"} if previous["summary_only"] else contact
         if local_only:
-            quality = await asyncio.to_thread(write_skill, target, skill_contact, persona, skill, observations, read_json(target / "stats.json"), read_quotes(target))
+            quality = await finish_thread(write_skill, target, skill_contact, persona, skill, observations, read_json(target / "stats.json"), read_quotes(target))
             report = read_json(target / "nuwa_report.json")
             if report:
                 matches = hashlib.sha256((target / "skill" / "SKILL.md").read_bytes()).hexdigest() == report["validation"]["skill_sha256"]
@@ -222,6 +241,7 @@ class Pipeline:
                                validation=report["validation"]["checks"] if matches else [])
                 write_json(target / "skill_quality.json", quality)
         else:
+            await finish_thread(EvidenceIndex(target).build, lambda: self.jobs.check(job_id))
             skill, quality, report = await NuwaWorkflow(self.llm, self.jobs, job_id, payload, target, skill_contact,
                 persona, observations, read_json(target / "stats.json"), read_quotes(target), previous["summary_only"]).run()
         meta = {**previous, "version": version, "created_at": now(),
@@ -232,7 +252,7 @@ class Pipeline:
         meta["nuwa_status"] = report["status"] if report else "legacy"
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
-        await asyncio.to_thread(self.publish, cid, target, meta)
+        await finish_thread(self.publish, cid, target, meta)
         return {"contact_id": cid, "version": version, "quality": quality, "skill_only": True, "nuwa_status": meta["nuwa_status"]}
 
     async def _run(self, job_id, payload):
@@ -257,7 +277,7 @@ class Pipeline:
             raise AppError("NOT_ENOUGH_DATA", "至少需要200条消息才能蒸馏。")
         write_json(target / "stats.json", stats)
         recent = await asyncio.to_thread(calculate, self.db, cid, max(stats["first_ts"], stats["last_ts"] - 30 * 86400), stats["last_ts"])
-        manifest = await asyncio.to_thread(self.prepare, cid, target, payload, stats)
+        manifest = await finish_thread(self.prepare, cid, target, payload, stats, lambda: self.jobs.check(job_id))
         parameters = {"model": settings["model"], "thinking": settings["thinking"], "send_raw": send_raw,
                       "base_url": settings["base_url"], "adapter": settings["adapter"], "thinking_values": settings["thinking_values"],
                       "thinking_field": settings["thinking_field"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
@@ -267,48 +287,46 @@ class Pipeline:
         parameters["radar_scales"] = self.config.get()["radar"]["scales"]
         parameters = checkpoint_parameters(target / "parameters.json", parameters,
             "续跑参数与检查点不一致。请恢复原参数，或取消任务后新建蒸馏。")
-        semaphore = asyncio.Semaphore(settings["concurrency"])
         completed = 0
         async def process(filename):
             nonlocal completed
-            async with semaphore:
-                self.jobs.check(job_id)
-                messages = read_json(target / "inputs" / filename)
-                input_messages = messages if send_raw else summary_messages(messages)
-                fingerprint = hashlib.sha256(dumps([input_messages, parameters, self.llm.template("distill_chunk"), self.llm.template("extract_quotes")]).encode()).hexdigest()
-                cache = root / "cache" / (fingerprint + ".json")
-                checkpoint = target / "chunks" / filename
-                result = read_json(checkpoint) or read_json(cache)
-                if not result:
-                    ids = {m["id"] for m in messages}
-                    def validate_observations(output):
-                        lookup = {m["id"]: m for m in input_messages}
-                        for ob in output["observations"]:
-                            if ob["quote"] and not any(ob["quote"] in lookup[mid]["text"] for mid in ob["evidence"] if mid in lookup):
-                                raise ValueError("观察中的引用不是证据消息的原文")
-                    partial = target / "chunks" / (filename + ".observations.json")
-                    saved = read_json(partial)
-                    observations = saved["output"] if saved and saved["fingerprint"] == fingerprint else None
-                    if observations is None:
-                        observations = await self.llm.call("distill_chunk", {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw}, ids, job_id, payload, validate_observations)
-                        write_json(partial, {"fingerprint": fingerprint, "output": observations})
-                    quotes = await self.llm.call("extract_quotes", {"messages": messages, "target": "them"}, ids, job_id, payload,
-                                                 lambda x: validate_quotes(x, messages)) if send_raw else {"quotes": []}
-                    result = {"observations": observations["observations"], "quotes": quotes["quotes"]}
-                    write_json(cache, result)
-                write_json(checkpoint, result)
-                completed += 1
-                self.jobs.progress(job_id, f"抽取证据 {completed}/{len(manifest['chunks'])}", .1 + .45 * completed / len(manifest["chunks"]))
-                return result
-        tasks = [asyncio.create_task(process(filename)) for filename in manifest["chunks"]]
+            self.jobs.check(job_id)
+            messages = read_json(target / "inputs" / filename)
+            input_messages = messages if send_raw else summary_messages(messages)
+            fingerprint = hashlib.sha256(dumps([input_messages, parameters, self.llm.template("distill_chunk"), self.llm.template("extract_quotes")]).encode()).hexdigest()
+            cache = root / "cache" / (fingerprint + ".json")
+            checkpoint = target / "chunks" / filename
+            result = read_json(checkpoint) or read_json(cache)
+            if not result:
+                observations = await extract(self.llm, self.jobs, job_id, payload, "distill_chunk",
+                    {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw},
+                    target / "chunks" / (filename + ".observations.json"), fingerprint)
+                quotes = await extract(self.llm, self.jobs, job_id, payload, "extract_quotes", {"messages": messages, "target": "them"},
+                    target / "chunks" / (filename + ".quotes.json"), fingerprint) if send_raw else {"quotes": []}
+                result = {"observations": observations["observations"], "quotes": quotes["quotes"]}
+                write_json(cache, result)
+            write_json(checkpoint, result)
+            completed += 1
+            self.jobs.progress(job_id, f"抽取证据 {completed}/{len(manifest['chunks'])}", .1 + .45 * completed / len(manifest["chunks"]))
+        pending = iter(manifest["chunks"])
+        async def worker():
+            for filename in pending:
+                await process(filename)
+                await asyncio.sleep(0)
+        tasks = [asyncio.create_task(worker()) for _ in range(min(settings["concurrency"], len(manifest["chunks"])))]
         try:
-            chunks = await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks)
         except BaseException:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        observations = compact_observations([ob for chunk in chunks for ob in chunk["observations"]])
+        index = EvidenceIndex(target)
+        await finish_thread(index.build, lambda: self.jobs.check(job_id))
+        # Preserve the exact packet used by already completed aggregate checkpoints.
+        observations = read_json(target / "observations.json")
+        if observations is None:
+            observations = await asyncio.to_thread(index.select)
         write_json(target / "observations.json", observations)
         ids = evidence_ids(observations)
         # Statistics do not expose raw names/content in summary mode.
@@ -322,17 +340,25 @@ class Pipeline:
             write_json(target / filename, output)
             return output
         persona = await stage("distill_persona", "persona.json", {"observations": observations, "stats": public_stats, "summary_only": not send_raw}, ids, .6)
-        radar_ids = ids | evidence_ids(stats["anchors"])
-        radar_model = await stage("distill_radar", "radar_model.json", {"persona": persona, "observations": observations, "stats": public_stats, "recent": {"anchors": recent["anchors"]}}, radar_ids, .7,
+        radar_context = {"persona": persona, "observations": observations, "stats": public_stats, "recent": {"anchors": recent["anchors"]}}
+        radar_ids = evidence_ids(radar_context)
+        radar_model = await stage("distill_radar", "radar_model.json", radar_context, radar_ids, .7,
                                   lambda x: score(x, stats, recent))
         radar = score(radar_model, stats, recent)
         write_json(target / "radar.json", radar)
         self_messages = manifest["self_examples"]
-        await stage("self_style", "self_style.json", {"messages": self_messages if send_raw else summary_messages(self_messages)}, {m["id"] for m in self_messages}, .72)
-        raw_quotes = [q for chunk in chunks for q in chunk["quotes"]]
-        quotes = await asyncio.to_thread(from_model, self.db, cid, raw_quotes)
-        unique = {q["id"]: q for q in quotes}
-        quotes = sorted(unique.values(), key=lambda q: q["score"], reverse=True)[:min(2000, max(1, round(stats["total"] * .03)))]
+        self_messages = bounded_examples(self_messages if send_raw else summary_messages(self_messages))
+        await stage("self_style", "self_style.json", {"messages": self_messages}, {m["id"] for m in self_messages}, .72)
+        def collect_quotes():
+            unique = {}
+            limit = min(2000, max(1, round(stats["total"] * .03)))
+            for filename in manifest["chunks"]:
+                self.jobs.check(job_id)
+                for quote in from_model(self.db, cid, read_json(target / "chunks" / filename)["quotes"]):
+                    unique[quote["id"]] = quote
+                unique = {q["id"]: q for q in sorted(unique.values(), key=lambda q: q["score"], reverse=True)[:limit]}
+            return sorted(unique.values(), key=lambda q: q["score"], reverse=True)
+        quotes = await finish_thread(collect_quotes)
         atomic_write(target / "quotes.jsonl", "".join(dumps(q) + "\n" for q in quotes))
         skill_contact = contact if send_raw else {**contact, "display_name": "B", "slug": f"anonymous-{cid:x}"}
         skill, quality, report = await NuwaWorkflow(self.llm, self.jobs, job_id, payload, target, skill_contact,
@@ -359,7 +385,7 @@ class Pipeline:
                 "summary_only": not send_raw, "skill_quality_passed": quality["passed"], "job_id": job_id, "nuwa_status": report["status"]}
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
-        await asyncio.to_thread(self.publish, cid, target, meta)
+        await finish_thread(self.publish, cid, target, meta)
         return {"contact_id": cid, "version": version, "dir": str(root), "quality": quality, "tokens": meta["tokens"], "quotes": len(quotes)}
 
     def publish(self, cid, target, meta):

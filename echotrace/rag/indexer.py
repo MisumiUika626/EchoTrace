@@ -89,6 +89,13 @@ def from_model(db, contact_id, items, allow_sensitive=False):
     for q in items:
         if q.get("sensitive") and not allow_sensitive:
             continue
+        evidence = set(q["evidence"])
+        sources = db.rows("SELECT m.id,m.sender,m.text FROM messages m JOIN sessions s ON s.id=m.session_id "
+                          "WHERE s.contact_id=? AND m.id IN (" + ",".join("?" for _ in evidence) + ")",
+                          (contact_id, *evidence))
+        if (not evidence or len(sources) != len(evidence) or not q["text"] or
+                any(m["sender"] != "them" or q["text"] not in m["text"] for m in sources)):
+            raise AppError("INVALID_EVIDENCE", "引用检查失败：原话必须逐字来自此人物的每条引用消息；旧检查点需复核后重新抽取。")
         context = window(db, contact_id, q["evidence"][0])
         source = next(m for m in context if m["id"] == q["evidence"][0])
         dims = {k: q[k] for k in ("reuse", "emotion", "relation", "info")}

@@ -54,6 +54,10 @@ class DistillStart(BaseModel):
     token_limit: int = Field(default=500000, ge=10000, le=100000000)
 
 
+class JobResume(BaseModel):
+    extra_budget: int = Field(default=0, strict=True, ge=0, le=100000000)
+
+
 class AdviceInput(BaseModel):
     consent: bool = False
     draft: str = Field(default="", max_length=8000)
@@ -598,8 +602,8 @@ async def job_pause(request: Request, job_id: str):
 
 
 @router.post("/jobs/{job_id}/resume")
-async def job_resume(request: Request, job_id: str, payload: dict):
-    return ok(services(request).jobs.resume(job_id, payload.get("extra_budget", 0)))
+async def job_resume(request: Request, job_id: str, payload: JobResume):
+    return ok(services(request).jobs.resume(job_id, payload.extra_budget))
 
 
 @router.get("/jobs/{job_id}/events")

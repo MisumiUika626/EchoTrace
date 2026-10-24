@@ -17,3 +17,5 @@
 @media(max-height:460px){.sidebar{padding-top:12px}.nav-label{padding-top:12px;padding-bottom:8px}.sidebar nav{gap:4px}.sidebar nav button{padding-top:8px;padding-bottom:8px}.sidebar-bottom{padding:6px 0}.local-status{display:none}}
 
 .nuwa-report{margin-bottom:24px;padding:24px}.nuwa-report details{padding:12px 0;border-top:1px solid #30303c}.nuwa-counts{display:flex;gap:20px;flex-wrap:wrap;margin:18px 0;color:#b8a3eb}.nuwa-table{overflow-x:auto}.nuwa-table table{width:100%;border-collapse:collapse;text-align:left}.nuwa-table th,.nuwa-table td{padding:10px;border-bottom:1px solid #30303c;vertical-align:top}.nuwa-checkpoints pre{white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;font-size:12px}.nuwa-checkpoints summary{cursor:pointer;color:#b8a3eb}
+
+.resume-budget{width:230px;max-width:100%;display:grid;gap:10px;text-align:left}.resume-budget .field{margin:0;min-width:0}.resume-budget>small{color:var(--muted);font-size:11px;line-height:1.6}.resume-budget .button{width:100%}@media(max-width:680px){.job-actions:has(.resume-budget){margin-left:0;width:100%;max-width:100%}.resume-budget{width:100%;flex-basis:100%}}

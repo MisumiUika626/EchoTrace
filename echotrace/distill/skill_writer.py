@@ -16,6 +16,16 @@ def citation(item):
     return "evidence: " + ", ".join(str(x) for x in item["evidence"])
 
 
+def citation_ids(markdown):
+    """Read the explicit citations emitted here, not arbitrary numbers in prose.
+
+    These are candidate IDs only. Callers must intersect them with the current
+    version's scoped evidence index before using them as an allowlist.
+    """
+    groups = re.findall(r"(?<![\w])evidence:[ \t]*([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)(?=[ \t]*(?:[）)\r\n]|$))", markdown)
+    return {int(mid.strip()) for group in groups for mid in group.split(",")}
+
+
 def describe(item):
     tag = "推断" if item["inferred"] else "原文支撑"
     return f"- {item['value']}（{tag}，置信度 {item['confidence']:.0%}；{citation(item)}）" + (f"\n  依据：{item['note']}" if item.get("note") else "")
