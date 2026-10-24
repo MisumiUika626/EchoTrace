@@ -1,4 +1,5 @@
 """Streaming adapters for exported files; never execute HTML or embedded scripts."""
+import codecs
 import json
 import re
 from datetime import datetime, timezone, timedelta
@@ -93,7 +94,8 @@ def normalize(row):
         kind = "json"
     return {"msg_id": str(field(row, "msg_id")), "sender_raw": name, "identity": str(identity or name),
             "role_hint": row.get("sender") if row.get("sender") in ("me", "them", "system") else None,
-            "ts": timestamp(field(row, "ts")), "text": text, "kind": kind, "reply_to": str(reply), "raw": row}
+            "ts": timestamp(field(row, "ts")), "text": text, "kind": kind, "reply_to": str(reply), "raw": row,
+            "encoding": row.get("encoding"), "source_line": row.get("source_line")}
 
 
 def json_rows(path):
@@ -109,35 +111,104 @@ def json_rows(path):
         yield from ijson.items(handle, prefix, use_float=True)
 
 
-TEXT_PATTERN = r"^\[?(?P<ts>\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s+(?P<sender>[^:：\n]+)[:：]\s*(?P<text>.*)$"
+TEXT_PATTERN = r"^\[?(?P<ts>\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\]?\s+(?P<sender>[^:：\n]+)[:：][ \t]?(?P<text>.*)$"
 HEADER_PATTERN = r"^(?P<ts>\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?)\s+(?P<sender>[^\n]+)$"
 
 
-def text_rows(path, custom_pattern=None):
+def _valid_text_headers(text, custom_pattern=None):
+    if custom_pattern:
+        try:
+            pattern = regex.compile(custom_pattern)
+        except regex.error as exc:
+            raise AppError("INVALID_PATTERN", "自定义正则无效。") from exc
+        return sum(bool(pattern.match(line, timeout=0.1)) for line in text.splitlines())
+    return sum(bool(re.match(TEXT_PATTERN, line) or re.match(HEADER_PATTERN, line)) for line in text.splitlines())
+
+
+def decode_qq_txt(path: Path, encoding=None, custom_pattern=None):
+    data = path.read_bytes()
+    requested = encoding.lower().replace("_", "-") if encoding else None
+    bom = None
+    if data.startswith(codecs.BOM_UTF8):
+        bom = "utf-8-sig"
+    elif data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        bom = "utf-16"
+    if requested:
+        selected = {"utf8": "utf-8", "utf16": "utf-16"}.get(requested, requested)
+        if selected not in {"utf-8", "utf-8-sig", "gbk", "utf-16", "utf-16-le", "utf-16-be"}:
+            raise AppError("IMPORT_ENCODING_INVALID", f"不支持的显式编码：{encoding}。")
+        try:
+            text = data.decode(selected)
+        except UnicodeDecodeError as exc:
+            raise AppError("IMPORT_ENCODING_FAILED", f"无法按显式编码 {encoding} 解码文件。") from exc
+        if not _valid_text_headers(text, custom_pattern):
+            raise AppError("IMPORT_ENCODING_FAILED", f"按显式编码 {encoding} 解码后未找到有效消息头。")
+        return text, selected
+    if bom:
+        try:
+            text = data.decode(bom)
+        except UnicodeDecodeError as exc:
+            raise AppError("IMPORT_ENCODING_FAILED", f"文件包含 {bom} BOM，但无法严格解码。") from exc
+        if not _valid_text_headers(text, custom_pattern):
+            raise AppError("IMPORT_PARSE_FAILED", "BOM 解码成功，但没有识别到有效消息头。")
+        return text, bom
+    candidates = []
+    for candidate in ("utf-8", "gbk", "utf-16"):
+        try:
+            text = data.decode(candidate)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        if _valid_text_headers(text, custom_pattern):
+            candidates.append((candidate, text))
+    unique = {}
+    for candidate, text in candidates:
+        unique.setdefault(text, candidate)
+    if not unique:
+        raise AppError("IMPORT_ENCODING_FAILED", "无法用 UTF-8、GBK 或 UTF-16 严格解码并识别消息头，请显式选择编码。")
+    if len(unique) > 1:
+        raise AppError("IMPORT_ENCODING_AMBIGUOUS", "文件编码存在歧义，请显式选择 --encoding。")
+    text, selected = next(iter(unique.items()))
+    return text, selected
+
+
+def text_rows(path, custom_pattern=None, encoding=None):
     try:
         pattern = regex.compile(custom_pattern or TEXT_PATTERN)
     except regex.error as exc:
         raise AppError("INVALID_PATTERN", "自定义正则无效。") from exc
     if not {"ts", "sender", "text"}.issubset(pattern.groupindex):
         raise AppError("INVALID_PATTERN", "正则必须含命名组 ts、sender、text。")
-    pending, matched = None, 0
-    with path.open(encoding="utf-8-sig", errors="replace") as handle:
-        for line in handle:
-            try:
-                match = pattern.match(line.rstrip("\r\n"), timeout=0.1)
-            except TimeoutError as exc:
-                raise AppError("INVALID_PATTERN", "正则匹配超时，请简化表达式。") from exc
-            header = None if custom_pattern or match else re.match(HEADER_PATTERN, line.rstrip())
-            if match or header:
-                if pending:
-                    yield pending
-                pending = (match or header).groupdict()
-                pending.setdefault("text", "")
-                matched += 1
-            elif pending:
-                pending["text"] += ("\n" if pending["text"] else "") + line.rstrip("\r\n")
-        if pending:
-            yield pending
+    pending, body_lines, matched = None, [], 0
+    text, selected_encoding = decode_qq_txt(path, encoding, custom_pattern)
+
+    def completed(separator=False):
+        lines = body_lines[:-1] if separator and body_lines and body_lines[-1] == "" else body_lines
+        item = dict(pending)
+        inline = item.pop("text", "")
+        item["text"] = "\n".join(([inline] if inline else []) + lines)
+        return item
+
+    for line_number, line in enumerate(text.splitlines(), 1):
+        try:
+            match = pattern.match(line, timeout=0.1)
+        except TimeoutError as exc:
+            raise AppError("INVALID_PATTERN", "正则匹配超时，请简化表达式。") from exc
+        header = None if custom_pattern or match else re.match(HEADER_PATTERN, line)
+        if match or header:
+            if pending:
+                yield completed(separator=True)
+            pending = (match or header).groupdict()
+            pending.setdefault("text", "")
+            pending["encoding"] = selected_encoding
+            pending["source_line"] = line_number
+            body_lines = []
+            matched += 1
+        elif pending:
+            body_lines.append(line)
+        elif line.strip():
+            raise AppError("IMPORT_PARSE_FAILED", f"第 {line_number} 行无法归属到任何消息，请核查原始记录。")
+    if pending:
+        yield completed()
     if not matched:
         raise AppError("IMPORT_PARSE_FAILED", "没有识别到消息，请使用「2026-01-01 12:00:00 昵称: 内容」格式或自定义正则。")
 
@@ -175,7 +246,7 @@ def html_rows(path):
         raise AppError("IMPORT_PARSE_FAILED", "此 HTML 布局暂不支持，请改用 JSON 或 JSONL 导出。")
 
 
-def parse_file(path: Path, custom_pattern=None):
+def parse_file(path: Path, custom_pattern=None, encoding=None):
     ext = path.suffix.lower()
     try:
         if ext in (".jsonl", ".ndjson"):
@@ -190,7 +261,7 @@ def parse_file(path: Path, custom_pattern=None):
             for row in json_rows(path):
                 yield normalize(row)
         elif ext in (".txt", ".log"):
-            for row in text_rows(path, custom_pattern):
+            for row in text_rows(path, custom_pattern, encoding):
                 yield normalize(row)
         elif ext in (".html", ".htm"):
             for row in html_rows(path):
