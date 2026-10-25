@@ -281,6 +281,24 @@ class NuwaWorkflow:
         write_skill(self.target, self.person, self.persona, skill, self.observations, self.stats, self.quotes)
         return (self.target / "skill" / "SKILL.md").read_text(encoding="utf-8")
 
+    def close_portable_evidence(self):
+        """Persist full current-version messages for every emitted citation."""
+        if self.summary_only:
+            return
+        references = self.target / "skill" / "references"
+        markdown_paths = [self.target / "skill" / "SKILL.md", references / "quotes.md"]
+        markdown_paths.extend(sorted((references / "research").glob("*.md")))
+        cited = set()
+        for path in markdown_paths:
+            if path.is_file():
+                cited.update(citation_ids(path.read_text(encoding="utf-8")))
+        messages = {message["id"]: message for message in self.packet["evidence_messages"]}
+        messages.update({message["id"]: message for message in self.index.messages(cited)})
+        packet = {**self.packet, "evidence_messages": sorted(
+            messages.values(), key=lambda message: (message.get("sequence", 0), message["id"])
+        )}
+        write_json(references / "evidence.json", packet)
+
     async def run(self):
         settings = self.llm.settings(self.payload)
         parameters = {"method": METHOD, "model": settings["model"], "thinking": settings["thinking"],
@@ -390,6 +408,7 @@ class NuwaWorkflow:
             gaps.append(f"只有 {len(skill['models'])} 个候选通过三重检验；未补造模型以满足数量。")
         if self.summary_only:
             gaps.append("摘要模式没有原始观点与语气，不能验证人物立场或还原表达风格。")
+        self.close_portable_evidence()
         passed = validation["passed"] and format_result["passed"] and not self.summary_only
         report = {"method": METHOD, "mode": "local_only", "status": "passed" if passed else "degraded", "completed_at": now(),
                   "research": summary, "selection": skill["selection"], "models": len(skill["models"]), "heuristics": len(skill["heuristics"]),
@@ -404,6 +423,7 @@ class NuwaWorkflow:
         write_json(self.target / "skill" / "references" / "nuwa-report.json", report)
         quality = {**format_result, "semantic_passed": passed, "nuwa_status": report["status"], "validation": validation["checks"]}
         write_json(self.target / "skill_quality.json", quality)
+        write_json(self.target / "skill" / "references" / "skill-quality.json", quality)
         atomic_write(self.target / "skill" / "references" / "workflow.md", "# 女娲流程记录\n\n" +
                      f"方法：{METHOD}；纯本地语料；修复 {len(rounds)-1}/2 轮。\n\n" +
                      "\n".join("- " + x for x in gaps) + "\n\n具体调研、候选筛选、测试问答及精炼报告见 nuwa-report.json。\n")

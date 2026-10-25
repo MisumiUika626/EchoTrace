@@ -1,12 +1,15 @@
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import httpx
 
 from conftest import claim
+from echotrace.distill.canonical_skill import REQUIRED_CANONICAL_FILES, validate_canonical_skill
 from echotrace.distill.nuwa import DIMENSIONS, select_framework
 from echotrace.distill.persona import active_dir
+from echotrace.distill.skill_writer import citation_ids
 from echotrace.llm.nuwa_skill import DOCUMENTS, load_nuwa_skill
 from echotrace.util import AppError, read_json, write_json
 from test_workflow import finish
@@ -38,6 +41,88 @@ def test_distributed_app_uses_bundled_nuwa_without_local_skill(tmp_path, monkeyp
     assert "name: huashu-nuwa" in skill["documents"]["SKILL.md"]
     assert "三重验证" in skill["documents"]["references/extraction-framework.md"]
     assert "角色扮演规则" in skill["documents"]["references/skill-template.md"]
+
+
+async def test_full_nuwa_skill_resolves_every_markdown_citation_from_portable_evidence(app, imported, model):
+    cid, _ = imported
+    state = app.state
+    first_target = state.db.one(
+        "SELECT id FROM messages WHERE sender='them' AND session_id IN "
+        "(SELECT id FROM sessions WHERE contact_id=?) ORDER BY sequence LIMIT 1",
+        (cid,),
+    )
+    state.db.execute(
+        "UPDATE messages SET text=text || ? WHERE id=?",
+        ("甲" * 2_000, first_target["id"]),
+    )
+    def bounded_provider(request):
+        response = model(request)
+        body = response.json()
+        stage = model.calls[-1][0]
+        document = json.loads(body["choices"][0]["message"]["content"])
+        if stage == "FullMap":
+            for finding in document["findings"]:
+                finding["value"] = finding["value"][:600]
+                finding["quote"] = finding["quote"][:800]
+        elif stage == "Quotes":
+            for quote in document["quotes"]:
+                quote["text"] = quote["text"][:800]
+        body["choices"][0]["message"]["content"] = json.dumps(document, ensure_ascii=False)
+        return httpx.Response(200, json=body)
+    state.llm.transport = httpx.MockTransport(bounded_provider)
+    await finish(state, state.jobs.create("distill", {
+        "contact_id": cid,
+        "consent": True,
+        "token_limit": 2_000_000,
+        "mode": "full",
+        "send_raw": True,
+    }))
+    root = active_dir(state.db, cid)
+    citations = set()
+    for relative in REQUIRED_CANONICAL_FILES:
+        citations.update(citation_ids((root / relative).read_text(encoding="utf-8")))
+    packet = read_json(root / "skill/references/evidence.json")
+    messages = {message["id"]: message for message in packet["evidence_messages"]}
+
+    assert citations
+    assert citations <= messages.keys()
+    for evidence_id in citations:
+        message = messages[evidence_id]
+        assert {"id", "sequence", "sender", "ts", "text"} <= message.keys()
+        assert "fragment_offset" not in message and "source_characters" not in message
+
+
+async def test_copied_canonical_skill_tree_needs_no_private_database(app, imported, model, tmp_path):
+    cid, _ = imported
+    state = app.state
+    await finish(state, state.jobs.create("distill", {
+        "contact_id": cid,
+        "consent": True,
+        "token_limit": 2_000_000,
+        "mode": "full",
+        "send_raw": True,
+    }))
+    source = active_dir(state.db, cid)
+    copied = tmp_path / "portable"
+    shutil.copytree(source / "skill", copied / "skill")
+    packet = read_json(copied / "skill/references/evidence.json")
+    quality = read_json(copied / "skill/references/skill-quality.json")
+    report = read_json(copied / "skill/references/nuwa-report.json")
+
+    assert quality is not None and report is not None
+    result = validate_canonical_skill(
+        copied,
+        packet["evidence_messages"],
+        quality,
+        report,
+    )
+    assert result["gates"]["canonical_files"] is True
+    assert result["gates"]["evidence_valid"] is True
+    assert result["gates"]["nuwa_quality"] is True
+    assert report["provenance"]["prompts"]
+    assert report["validation"]["skill_sha256"] == hashlib.sha256(
+        (copied / "skill/SKILL.md").read_bytes()
+    ).hexdigest()
 
 
 async def test_research_artifacts_and_blind_independent_validation(app, imported, model):
