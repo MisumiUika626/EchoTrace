@@ -3,9 +3,15 @@ import json
 import httpx
 import pytest
 
-from echotrace.distill.full_reduce import deduplicate_findings, map_chunk, validate_findings
+from echotrace.distill.full_reduce import (
+    deduplicate_findings,
+    map_chunk,
+    plan_reduce_groups,
+    reduce_findings,
+    validate_findings,
+)
 from echotrace.llm.schemas import SCHEMAS
-from echotrace.util import dumps, read_json
+from echotrace.util import AppError, dumps, read_json
 from test_large_distill import extraction_job
 
 
@@ -152,3 +158,73 @@ async def test_full_map_stops_after_one_failed_repair_and_records_failure(app, t
     assert result["status"] == "failed"
     assert result["error"]["code"] == "LLM_OUTPUT_INVALID"
     assert read_json(path) == result
+
+
+def _many_findings(count=36):
+    return [_finding(topic=f"主题{index}", value=f"观察{index}：" + "甲" * 560,
+                     evidence=["m000002"] if index % 2 == 0 else ["m000003"], quote="")
+            for index in range(count)]
+
+
+def _reduce_provider(calls, preserve=False):
+    def provider(request):
+        body = json.loads(request.content)
+        prompt = next(message["content"] for message in body["messages"] if message["role"] == "user")
+        context = json.loads([line for line in prompt.splitlines() if line.startswith("{")][-1])
+        calls.append(context)
+        incoming = context["findings"]
+        output_findings = incoming if preserve else [incoming[0]]
+        output = {"findings": output_findings, "contradictions": [], "unknowns": []}
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": dumps(output)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        })
+    return provider
+
+
+async def test_small_full_reduce_uses_direct_request(app, tmp_path):
+    calls = []
+    app.state.llm.transport = httpx.MockTransport(_reduce_provider(calls))
+    job_id = extraction_job(app.state)
+
+    result = await reduce_findings(app.state.llm, app.state.jobs, job_id, {},
+                                   [_finding(), _finding(topic="变化", value="允许临时调整", evidence=["m000003"], quote="")],
+                                   _messages(), tmp_path / "reduce.json", "direct")
+
+    assert result["status"] == "succeeded" and result["reduce_layers"] == 0
+    assert len(calls) == 1 and calls[0]["intermediate"] is False
+
+
+async def test_large_full_reduce_uses_one_deterministic_intermediate_layer(app, tmp_path):
+    app.state.config.update({"llm": {"context_window": 16384, "max_tokens": 4096}})
+    findings = _many_findings()
+    settings = app.state.llm.settings({})
+    first = plan_reduce_groups(app.state.llm, settings, findings)
+    second = plan_reduce_groups(app.state.llm, settings, findings)
+    assert first == second and len(first) > 1
+    calls = []
+    app.state.llm.transport = httpx.MockTransport(_reduce_provider(calls))
+    job_id = extraction_job(app.state)
+
+    result = await reduce_findings(app.state.llm, app.state.jobs, job_id, {}, findings,
+                                   _messages(), tmp_path / "reduce.json", "layered")
+
+    assert result["status"] == "succeeded" and result["reduce_layers"] == 1
+    assert len(calls) == len(first) + 1
+    assert all(call["intermediate"] is True for call in calls[:-1])
+    assert calls[-1]["intermediate"] is False
+
+
+async def test_full_reduce_refuses_a_second_intermediate_layer(app, tmp_path):
+    app.state.config.update({"llm": {"context_window": 16384, "max_tokens": 4096}})
+    findings = _many_findings()
+    calls = []
+    app.state.llm.transport = httpx.MockTransport(_reduce_provider(calls, preserve=True))
+    job_id = extraction_job(app.state)
+
+    with pytest.raises(AppError) as error:
+        await reduce_findings(app.state.llm, app.state.jobs, job_id, {}, findings,
+                              _messages(), tmp_path / "reduce.json", "too-large")
+
+    assert error.value.code == "REDUCE_CONTEXT_TOO_LARGE"
+    assert calls and all(call["intermediate"] is True for call in calls)

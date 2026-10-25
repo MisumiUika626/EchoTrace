@@ -1,6 +1,8 @@
 """Deterministic Evidence checks and aggregation for full distillation."""
 from copy import deepcopy
 
+from echotrace.llm.budget import plan_request_budget
+from echotrace.llm.client import build_request
 from echotrace.util import AppError, read_json, write_json
 
 
@@ -79,5 +81,91 @@ async def map_chunk(llm, jobs, job_id, payload, messages, owned_ids, path, finge
     except AppError as exc:
         result = {"fingerprint": fingerprint, "status": "failed",
                   "error": {"code": exc.code, "message": exc.message}}
+    write_json(path, result)
+    return result
+
+
+def _reduce_context(findings, intermediate):
+    return {"findings": findings, "intermediate": intermediate}
+
+
+def _fits_reduce(llm, settings, findings, intermediate):
+    context = _reduce_context(findings, intermediate)
+    request = build_request(llm, "full_reduce", settings, context)
+    try:
+        plan_request_budget("full_reduce", settings, request, content_value=context)
+        return True
+    except AppError as exc:
+        if exc.code == "REQUEST_OVERHEAD_TOO_LARGE":
+            return False
+        raise
+
+
+def plan_reduce_groups(llm, settings, findings):
+    """Greedily produce reproducible maximal groups under the complete request budget."""
+    groups = []
+    current = []
+    for finding in findings:
+        candidate = current + [finding]
+        if _fits_reduce(llm, settings, candidate, True):
+            current = candidate
+            continue
+        if not current:
+            raise AppError("REDUCE_CONTEXT_TOO_LARGE", "单条 Map 观察无法放入 Reduce 完整请求。")
+        groups.append(current)
+        current = [finding]
+        if not _fits_reduce(llm, settings, current, True):
+            raise AppError("REDUCE_CONTEXT_TOO_LARGE", "单条 Map 观察无法放入 Reduce 完整请求。")
+    if current:
+        groups.append(current)
+    return groups
+
+
+async def _call_reduce(llm, job_id, payload, findings, messages, intermediate):
+    allowed_ids = {message["id"] for message in messages}
+    return await llm.call(
+        "full_reduce",
+        _reduce_context(findings, intermediate),
+        allowed_ids,
+        job_id,
+        payload,
+        lambda document: validate_findings(document, messages, allowed_ids),
+        max_attempts=2,
+    )
+
+
+async def reduce_findings(llm, jobs, job_id, payload, findings, messages, path, fingerprint):
+    """Reduce directly or through exactly one intermediate layer."""
+    saved = read_json(path)
+    if saved and saved.get("fingerprint") == fingerprint and saved.get("status") == "succeeded":
+        return saved
+    jobs.check(job_id)
+    unique = deduplicate_findings(findings)
+    settings = llm.settings(payload)
+    if _fits_reduce(llm, settings, unique, False):
+        output = await _call_reduce(llm, job_id, payload, unique, messages, False)
+        result = {"fingerprint": fingerprint, "status": "succeeded",
+                  "reduce_layers": 0, "output": output}
+        write_json(path, result)
+        return result
+
+    groups = plan_reduce_groups(llm, settings, unique)
+    intermediate_findings = []
+    for index, group in enumerate(groups):
+        jobs.check(job_id)
+        checkpoint = path.with_name(path.name + f".group-{index}.json")
+        group_output = read_json(checkpoint)
+        if group_output is None:
+            group_output = await _call_reduce(llm, job_id, payload, group, messages, True)
+            write_json(checkpoint, group_output)
+        intermediate_findings.extend(group_output.get("findings", []))
+        intermediate_findings.extend(group_output.get("contradictions", []))
+    intermediate_findings = deduplicate_findings(intermediate_findings)
+    if not _fits_reduce(llm, settings, intermediate_findings, False):
+        raise AppError("REDUCE_CONTEXT_TOO_LARGE",
+                       "一层中间归并后最终 Reduce 仍超过上下文容量；不会继续递归归并。")
+    output = await _call_reduce(llm, job_id, payload, intermediate_findings, messages, False)
+    result = {"fingerprint": fingerprint, "status": "succeeded",
+              "reduce_layers": 1, "output": output}
     write_json(path, result)
     return result
