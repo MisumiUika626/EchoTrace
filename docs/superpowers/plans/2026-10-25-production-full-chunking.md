@@ -293,3 +293,9 @@ Commit message: `docs: record production full chunking`
 Run: `git push origin feature/canonical-message-evidence`
 
 Expected: remote branch advances to the verified HEAD; `main` remains unchanged.
+
+## Execution record
+
+- Tasks 1–4 implemented in commits `5b57605`, `b3854f7`, `90033d3`, and `d0a6b7c`.
+- Phase 3 uses one dual-stage planner for dry-run and production full inputs; legacy missing-mode jobs remain sampled.
+- Final suite/build/push evidence is recorded in `docs/进度.md` after Task 5 verification. Phase 4+ remains intentionally unimplemented.

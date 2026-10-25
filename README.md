@@ -91,7 +91,9 @@ py -3 -m venv .venv
 
 设置页将「模型上下文窗口」与「单次输出上限」分开。官方地址上的 `deepseek-flash`、`deepseek-v4-pro` 使用项目内有日期的官方容量元数据；第三方地址、别名或未知模型必须勾选「我已向当前服务商确认此容量」，EchoTrace 不会按相似名字猜测。程序计算完整序列化请求（系统指令、阶段 Prompt、schema、角色与消息元数据、输出/思考预留），再保留 `max(1024, 上下文容量的 1%)` 安全余量。当前没有匹配 tokenizer 时使用确定性的保守字符估算器，并明确显示 `approximate`；估算不能替代服务商实际分词或计费。
 
-开始付费调用前，可在蒸馏窗口点击「本机预演」，或运行 `echotrace distill --contact ID --dry-run`。预演在 API Key、Base URL 连通性和隐私同意检查之前完成，不读取密钥、不联网、不创建任务或 Skill，也不返回聊天正文；它给出 Whole/Chunked 判断、来源序号范围、长消息片段数和完整请求预算。这里的 Chunked 仍是 Phase 2 诊断边界，正式蒸馏执行器尚未切换到该边界，现有 quick/standard/deep 与固定分片继续保留到 Phase 3。
+开始付费调用前，可在蒸馏窗口点击「本机预演」，或运行 `echotrace distill --contact ID --dry-run`。预演在 API Key、Base URL 连通性和隐私同意检查之前完成，不读取密钥、不联网、不创建任务或 Skill，也不返回聊天正文；它与正式 `full` 执行共用同一 Whole/Chunked 边界，同时核算观察和语录两个请求阶段。
+
+`full` 是新任务默认：按 `sequence` 完整首次覆盖授权范围，每片尽量装满；相邻片只可重叠最多 3 条完整消息，且不超过内容容量的 5%，如果影响新内容就从最旧重叠开始缩减到 0。过长单消息只在模型输入视图切片，按偏移重组必须逐字等于数据库原文。`full` 必须授权发送原文，成本通常更高。`sampled` 保留 quick/standard/deep，用于低成本预览，界面和版本列表会标注“抽样预览”；旧任务没有 mode 时继续按 sampled 恢复。Phase 3 的输入覆盖完整不等于 canonical Skill 已 `complete`，正式 `distill_manifest.json`、新 Map-Reduce/Evidence 语义门槛和三风格 Reply 仍属后续阶段。
 
 抽取遇到截断、上下文超长或持续校验失败时，自动拆分消息片段，单条长消息保留原 ID 与字符偏移；最多递归六层。无法继续拆分的片段遇到截断时，输出额度由 4096 逐级翻倍，最多尝试八档；始终受用户输出上限、剩余上下文和任务总预算约束，不会每次直接申请 384K。拆分决定、扩容进度和成功子片均保存检查点，手动继续只补未完成部分。可定位的错误引用或原话只请求修正错误条目，保留已通过条目。汇总阶段截断会在上下文与用户输出上限内有限扩容；仍失败时保留检查点并显示本次申请额度、设置上限和上下文窗口，不发布残缺结果。思考 token 可能与正文共享输出额度，实际以服务商为准；截断复核文件保留额度及用量元数据。所有已返回的截断、修复请求均计入用量。
 
@@ -123,11 +125,11 @@ py -3 -m venv .venv
 # 不读取 API Key、不联网，只预演完整请求容量与分片
 .\.venv\Scripts\echotrace.exe distill --contact 1 --dry-run
 
-# 在另一个终端启动服务并配置好模型后，明确授权本次蒸馏
-.\.venv\Scripts\echotrace.exe distill --contact 1 --consent --tier standard --token-limit 500000
+# 在另一个终端启动服务并配置好模型后，默认 full 完整覆盖
+.\.venv\Scripts\echotrace.exe distill --contact 1 --consent --mode full --token-limit 500000
 
-# 仅发送匿名统计摘要；模型和思考深度可按次覆盖
-.\.venv\Scripts\echotrace.exe distill --contact 1 --consent --summary --model your-model --thinking high
+# 抽样预览仍可选档位；摘要只允许用于 sampled
+.\.venv\Scripts\echotrace.exe distill --contact 1 --consent --mode sampled --tier quick --summary --model your-model --thinking high
 
 # 起止时间为 Unix 秒。需要本机 QCE 已就绪
 .\.venv\Scripts\echotrace.exe export --name "示例人物" --uid 123456 --me 654321 --start 1767225600 --end 1769904000 --format STREAMING_JSONL
