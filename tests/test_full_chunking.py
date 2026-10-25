@@ -11,7 +11,7 @@ from echotrace.distill.pipeline import (
 from echotrace.distill.planner import plan_full_chunks
 from echotrace.ingest.canonical import canonical_messages
 from echotrace.stats import calculate
-from echotrace.util import AppError, read_json, write_json
+from echotrace.util import AppError, dumps, read_json, write_json
 
 
 def _settings(context_window=16_384, **changes):
@@ -126,6 +126,178 @@ async def test_full_pipeline_uses_phase4_and_persists_complete_phase4_manifest(a
     assert manifest["reduce_layers"] in (0, 1)
     assert manifest["evidence_validated"] is True
     assert manifest["phase4_complete"] is True
+
+
+async def test_valid_full_pipeline_writes_complete_formal_manifest(app, imported, model, monkeypatch):
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import active_dir
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    await app.state.pipeline._run(job_id, {
+        "contact_id": contact_id,
+        "consent": True,
+        "token_limit": 2_000_000,
+        "mode": "full",
+        "send_raw": True,
+    })
+    target = active_dir(app.state.db, contact_id)
+    metadata = read_json(target / "metadata.json")
+    formal = read_json(target / "distill_manifest.json")
+
+    assert metadata["complete"] is True
+    assert metadata["complete_eligible"] is True
+    assert formal["complete"] is True
+    assert all(formal["gates"].values())
+    assert formal["skill_path"] == "skill/SKILL.md"
+    assert read_json(target.parent.parent / "distill_manifest.json")["complete"] is True
+
+
+async def test_source_change_before_publish_records_incomplete_and_stops_formal_publish(app, imported, model, monkeypatch):
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import person
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+    original_validate = pipeline_module.validate_full_coverage
+    validation_calls = 0
+
+    def mutate_on_final(db, contact_id, target, manifest):
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 3:
+            db.execute(
+                "UPDATE messages SET text=text || '变' WHERE sequence=0 AND session_id IN "
+                "(SELECT id FROM sessions WHERE contact_id=?)",
+                (contact_id,),
+            )
+        return original_validate(db, contact_id, target, manifest)
+
+    monkeypatch.setattr(pipeline_module, "validate_full_coverage", mutate_on_final)
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    with pytest.raises(AppError) as error:
+        await app.state.pipeline._run(job_id, {
+            "contact_id": contact_id,
+            "consent": True,
+            "token_limit": 2_000_000,
+            "mode": "full",
+            "send_raw": True,
+        })
+    target = (app.state.db.root / "people" / person(app.state.db, contact_id)["slug"]
+              / "versions/v1")
+    formal = read_json(target / "distill_manifest.json")
+    metadata = read_json(target / "metadata.json")
+
+    assert error.value.code == "STALE_DISTILLATION"
+    assert formal["complete"] is False
+    assert formal["gates"]["source_current"] is False
+    assert metadata["complete"] is False
+    assert app.state.db.one(
+        "SELECT COUNT(*) AS n FROM personas WHERE contact_id=?", (contact_id,)
+    )["n"] == 0
+
+
+async def test_degraded_nuwa_records_incomplete_and_stops_formal_publish(app, imported, model, monkeypatch):
+    import json
+    import httpx
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import person
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+
+    def degraded_provider(request):
+        response = model(request)
+        body = response.json()
+        if model.calls[-1][0] == "NuwaEvaluation":
+            document = json.loads(body["choices"][0]["message"]["content"])
+            document["checks"][0].update(passed=False, reason="模拟语义检查失败")
+            document["improvements"] = ["需要人工复核 Evidence 语义"]
+            body["choices"][0]["message"]["content"] = json.dumps(document, ensure_ascii=False)
+        return httpx.Response(200, json=body)
+
+    app.state.llm.transport = httpx.MockTransport(degraded_provider)
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    with pytest.raises(AppError) as error:
+        await app.state.pipeline._run(job_id, {
+            "contact_id": contact_id,
+            "consent": True,
+            "token_limit": 2_000_000,
+            "mode": "full",
+            "send_raw": True,
+        })
+    target = (app.state.db.root / "people" / person(app.state.db, contact_id)["slug"]
+              / "versions/v1")
+    formal = read_json(target / "distill_manifest.json")
+
+    assert error.value.code == "NUWA_QUALITY_INCOMPLETE"
+    assert formal["complete"] is False
+    assert formal["gates"]["nuwa_quality"] is False
+    assert read_json(target / "metadata.json")["complete"] is False
+    assert app.state.db.one(
+        "SELECT COUNT(*) AS n FROM personas WHERE contact_id=?", (contact_id,)
+    )["n"] == 0
+
+
+async def test_sampled_writes_incomplete_formal_manifest_and_cannot_replace_complete(app, imported, model, monkeypatch):
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import active_dir
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+    contact_id, _ = imported
+    first_job = extraction_job(app.state)
+    await app.state.pipeline._run(first_job, {
+        "contact_id": contact_id,
+        "consent": True,
+        "token_limit": 2_000_000,
+        "mode": "sampled",
+        "tier": "quick",
+        "send_raw": True,
+    })
+    target = active_dir(app.state.db, contact_id)
+    formal = read_json(target / "distill_manifest.json")
+
+    assert formal["mode"] == "sampled"
+    assert formal["complete"] is False
+    assert formal["gates"]["mode_full"] is False
+    assert read_json(target / "metadata.json")["complete"] is False
+
+    metadata = read_json(target / "metadata.json")
+    metadata["complete"] = True
+    write_json(target / "metadata.json", metadata)
+    second_job = "extract-sampled-2"
+    app.state.db.execute(
+        "INSERT INTO jobs(id,kind,status,payload) VALUES(?, 'distill', 'running', ?)",
+        (second_job, dumps({"token_limit": 2_000_000})),
+    )
+    with pytest.raises(AppError) as error:
+        await app.state.pipeline._run(second_job, {
+            "contact_id": contact_id,
+            "consent": True,
+            "token_limit": 2_000_000,
+            "mode": "sampled",
+            "tier": "quick",
+            "send_raw": True,
+        })
+    assert error.value.code == "SAMPLED_CANNOT_REPLACE_COMPLETE"
+    assert active_dir(app.state.db, contact_id) == target
 
 
 async def test_failed_full_map_records_incomplete_manifest_and_stops_publish(app, imported, model, monkeypatch):

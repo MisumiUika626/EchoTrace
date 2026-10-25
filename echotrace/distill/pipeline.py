@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from echotrace.distill.canonical_skill import build_distill_manifest, validate_canonical_skill
 from echotrace.distill.evidence import EvidenceIndex
 from echotrace.distill.extraction import extract
 from echotrace.distill.full_reduce import map_chunk, reduce_findings
@@ -601,7 +602,87 @@ class Pipeline:
                     first_covered_fragments=sum(manifest.get("fragmented", {}).values()),
                     fragmented_messages=len(manifest.get("fragmented", {})),
                     complete_eligible=False, complete=False)
+        completion_error = None
+        if full_mode:
+            source_current = True
+            try:
+                current_messages = validate_full_coverage(self.db, cid, target, manifest)
+            except AppError as exc:
+                if exc.code != "INVALID_FULL_COVERAGE":
+                    raise
+                source_current = False
+                current_messages = canonical_payloads
+            canonical = validate_canonical_skill(target, current_messages, quality, report)
+            canonical["gates"] = {
+                "mode_full": True,
+                "coverage_complete": manifest.get("phase4_complete") is True,
+                "source_current": source_current,
+                **canonical["gates"],
+            }
+            canonical["complete"] = all(canonical["gates"].values())
+            formal_internal = {**manifest, "sources": canonical_messages(self.db, cid)["sources"]}
+            formal_parameters = {**parameters, "nuwa_template_version": report.get("method")}
+            formal_metadata = {**meta, "contact_id": cid, "session_id": contact["slug"]}
+            formal = build_distill_manifest(
+                internal=formal_internal,
+                parameters=formal_parameters,
+                metadata=formal_metadata,
+                nuwa_report=report,
+                quality=quality,
+                canonical=canonical,
+                skill_path="skill/SKILL.md",
+                built_at=datetime.now(TZ).isoformat(),
+            )
+            meta.update(complete_eligible=formal["complete"], complete=formal["complete"])
+            write_json(target / "distill_manifest.json", formal)
+            if not source_current:
+                completion_error = AppError(
+                    "STALE_DISTILLATION",
+                    "正式 Skill 生成期间源消息指纹发生变化；候选诊断已保留但未发布。",
+                )
+            elif not canonical["gates"]["canonical_files"] or not canonical["gates"]["derived_consistent"]:
+                completion_error = AppError(
+                    "CANONICAL_SKILL_INCOMPLETE",
+                    "canonical Skill 或派生产物不完整；候选诊断已保留但未发布。",
+                )
+            elif not canonical["gates"]["evidence_valid"]:
+                completion_error = AppError(
+                    "CANONICAL_EVIDENCE_INVALID",
+                    "canonical Skill 引用的 Evidence 不在本次授权便携范围内。",
+                )
+            elif not canonical["gates"]["nuwa_quality"]:
+                completion_error = AppError(
+                    "NUWA_QUALITY_INCOMPLETE",
+                    "Nuwa 格式、语义状态或 Skill 哈希门禁未通过；候选诊断已保留但未发布。",
+                )
+        else:
+            portable = read_json(target / "skill" / "references" / "evidence.json", {})
+            preview_messages = portable.get("evidence_messages", [])
+            canonical = validate_canonical_skill(target, preview_messages, quality, report)
+            canonical["gates"] = {
+                "mode_full": False,
+                "coverage_complete": False,
+                "source_current": False,
+                **canonical["gates"],
+            }
+            canonical["complete"] = False
+            formal_internal = {**manifest, "sources": canonical_messages(self.db, cid)["sources"]}
+            formal_parameters = {**parameters, "nuwa_template_version": report.get("method")}
+            formal_metadata = {**meta, "contact_id": cid, "session_id": contact["slug"]}
+            formal = build_distill_manifest(
+                internal=formal_internal,
+                parameters=formal_parameters,
+                metadata=formal_metadata,
+                nuwa_report=report,
+                quality=quality,
+                canonical=canonical,
+                skill_path="skill/SKILL.md",
+                built_at=datetime.now(TZ).isoformat(),
+            )
+            write_json(target / "distill_manifest.json", formal)
         write_json(target / "metadata.json", meta)
+        if completion_error:
+            raise completion_error
         self.jobs.check(job_id)
         await finish_thread(self.publish, cid, target, meta)
         return {"contact_id": cid, "version": version, "dir": str(root), "quality": quality, "tokens": meta["tokens"], "quotes": len(quotes)}
@@ -614,7 +695,9 @@ class Pipeline:
         if not all((target / filename).exists() for filename in required):
             raise AppError("INCOMPLETE_ARTIFACTS", "蒸馏产物不完整，未发布。")
         root = target.parent.parent
-        for name in ("persona.json", "radar.json", "quotes.jsonl", "metrics.json", "self_style.json", "skill_quality.json"):
+        for name in ("persona.json", "radar.json", "quotes.jsonl", "metrics.json", "self_style.json", "skill_quality.json", "distill_manifest.json"):
+            if not (target / name).exists():
+                continue
             atomic_write(root / name, (target / name).read_text(encoding="utf-8"))
         shutil.copytree(target / "skill", root / "skill", dirs_exist_ok=True)
         (root / "rag").mkdir(exist_ok=True)
