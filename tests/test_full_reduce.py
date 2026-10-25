@@ -1,0 +1,87 @@
+import pytest
+
+from echotrace.distill.full_reduce import deduplicate_findings, validate_findings
+from echotrace.llm.schemas import SCHEMAS
+
+
+def _messages():
+    return [
+        {"id": "m000001", "sequence": 0, "sender": "me", "text": "我觉得她最近更喜欢先确认时间。", "ts": 1},
+        {"id": "m000002", "sequence": 1, "sender": "them", "text": "先看看大家哪天有空，再决定去哪。", "ts": 2},
+        {"id": "m000003", "sequence": 2, "sender": "them", "text": "临时变化也没关系。", "ts": 3},
+    ]
+
+
+def _finding(**changes):
+    item = {
+        "topic": "安排前确认条件",
+        "value": "对方在共同安排前倾向先确认参与者的时间。",
+        "evidence": ["m000002"],
+        "source_kind": "direct",
+        "inferred": False,
+        "confidence": 0.8,
+        "note": "",
+        "quote": "先看看大家哪天有空",
+    }
+    item.update(changes)
+    return item
+
+
+def test_full_map_accepts_open_topic_and_direct_target_evidence():
+    document = {"findings": [_finding(topic="自定义开放主题")], "open_questions": []}
+
+    parsed = SCHEMAS["full_map"].model_validate(document).model_dump()
+    validated = validate_findings(parsed, _messages(), {"m000001", "m000002", "m000003"})
+
+    assert validated["findings"][0]["topic"] == "自定义开放主题"
+
+
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({"evidence": ["m999999"]}, "授权范围"),
+        ({"evidence": ["m000002", "m000002"]}, "重复"),
+        ({"evidence": ["m000001"]}, "目标本人"),
+        ({"source_kind": "reported", "evidence": ["m000001"], "note": ""}, "转述"),
+        ({"source_kind": "inference", "inferred": True, "note": ""}, "推断"),
+        ({"quote": "并不存在的逐字原话"}, "逐字"),
+    ],
+)
+def test_evidence_validator_rejects_unauthorized_or_misattributed_findings(changes, match):
+    document = {"findings": [_finding(**changes)], "open_questions": []}
+
+    with pytest.raises(ValueError, match=match):
+        validate_findings(document, _messages(), {"m000001", "m000002", "m000003"})
+
+
+def test_reported_claim_from_other_speaker_requires_explicit_limit():
+    document = {"findings": [_finding(
+        source_kind="reported", evidence=["m000001"], inferred=True,
+        note="这是另一位发言人的转述，未得到目标本人确认。", quote="",
+    )], "open_questions": []}
+
+    validated = validate_findings(document, _messages(), {"m000001", "m000002"})
+
+    assert validated["findings"][0]["source_kind"] == "reported"
+
+
+def test_overlap_deduplication_merges_evidence_without_voting_twice():
+    first = _finding(evidence=["m000002"], confidence=0.7)
+    duplicate = _finding(evidence=["m000002", "m000003"], confidence=0.9)
+    distinct = _finding(topic="面对变化", value="对方允许安排临时调整。",
+                        evidence=["m000003"], quote="临时变化也没关系")
+
+    result = deduplicate_findings([first, duplicate, distinct])
+
+    assert len(result) == 2
+    assert result[0]["evidence"] == ["m000002", "m000003"]
+    assert result[0]["confidence"] == 0.9
+    assert result[1]["topic"] == "面对变化"
+
+
+def test_owned_ids_prevent_overlap_only_observation_from_becoming_new_output():
+    document = {"findings": [_finding(evidence=["m000002"])], "open_questions": []}
+
+    with pytest.raises(ValueError, match="首次覆盖"):
+        validate_findings(document, _messages(), {"m000001", "m000002", "m000003"},
+                          owned_ids={"m000003"})

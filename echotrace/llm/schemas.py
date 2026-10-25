@@ -36,6 +36,31 @@ class Chunk(Record):
     open_questions: list[str] = Field(default_factory=list, max_length=8)
 
 
+class Finding(Claim):
+    topic: str = Field(min_length=1, max_length=120)
+    source_kind: Literal["direct", "reported", "inference"]
+    quote: str = Field(default="", max_length=800)
+
+    @model_validator(mode="after")
+    def source_marked(self):
+        if self.source_kind in ("reported", "inference") and not self.inferred:
+            raise ValueError("转述和推断必须标明 inferred")
+        if self.source_kind in ("reported", "inference") and not self.note.strip():
+            raise ValueError("转述和推断必须注明来源或推断限制")
+        return self
+
+
+class FullMap(Record):
+    findings: list[Finding] = Field(max_length=32)
+    open_questions: list[str] = Field(default_factory=list, max_length=12)
+
+
+class FullReduce(Record):
+    findings: list[Finding] = Field(max_length=48)
+    contradictions: list[Finding] = Field(default_factory=list, max_length=16)
+    unknowns: list[str] = Field(default_factory=list, max_length=16)
+
+
 class Section(Record):
     key: str
     title: str
@@ -147,7 +172,8 @@ class Chat(Record):
     inferred: bool
 
 
-SCHEMAS = {"distill_chunk": Chunk, "distill_persona": Persona, "distill_radar": Radar,
+SCHEMAS = {"distill_chunk": Chunk, "full_map": FullMap, "full_reduce": FullReduce,
+           "distill_persona": Persona, "distill_radar": Radar,
            "extract_quotes": Quotes, "distill_skill": Skill, "self_style": SelfStyle,
            "advise_top3": Advice, "chat_roleplay": Chat}
 
