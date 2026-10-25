@@ -18,6 +18,7 @@ export const t = {
   samplePreview: '前 50 条预览', startImport: '确认并导入', uploading: '正在导入…', cancel: '取消', done: '完成', loading: '正在加载…', retry: '重试',
   distillTitle: '从对话中，慢慢读懂一个人', distillSub: '生成画像、关系雷达、人物 Skill 与重要话语库。所有判断都保留原始依据。',
   model: '模型 ID', thinking: '思考深度', tier: '蒸馏档位', quick: '快速', standard: '标准', deep: '深度', low: '低', medium: '中', high: '高', max: '最高（Max）',
+  distillMode: '覆盖模式', fullMode: '全量', sampledMode: '抽样预览', fullModeWarning: '全量模式会按动态容量完整覆盖授权范围，必须发送原文，成本通常更高。Phase 3 仍不代表 canonical Skill 已 complete。', sampledModeWarning: '抽样预览只分析部分消息，更省成本，但不是完整人物档案。', fullRawRequired: '全量模式必须发送授权范围原文', fullWhole: '完整 · Whole', fullChunked: '完整 · Chunked', sampledPreview: '抽样预览',
   tokens: '预估 token', duration: '预估耗时', minutes: '分钟', tokenLimit: '本次 token 上限', rawSend: '发送聊天原文', summary: '仅匿名统计摘要',
   summaryWarning: '摘要模式不发送原文，画像质量会显著下降；不会自动抽取原话语料。', consent: '我同意本次将所选上下文发送给设置中的模型服务商',
   privacyExplain: '导入与浏览都在本机进行。只有你主动使用蒸馏、求助或模拟对话时，相关内容才会发送到你配置的模型服务商。图片和语音文件不会发送。',

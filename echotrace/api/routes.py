@@ -554,7 +554,18 @@ async def action_list(request: Request, cid: int):
 
 @router.get("/contacts/{cid}/versions")
 async def versions(request: Request, cid: int):
-    return ok(services(request).db.rows("SELECT * FROM personas WHERE contact_id=? ORDER BY version DESC", (cid,)))
+    rows = services(request).db.rows("SELECT * FROM personas WHERE contact_id=? ORDER BY version DESC", (cid,))
+    for row in rows:
+        metadata = read_json(Path(row["dir"]) / "metadata.json", {})
+        parameters = read_json(Path(row["dir"]) / "parameters.json", {})
+        mode = metadata.get("distill_mode") or "sampled"
+        row.update(distill_mode=mode,
+                   coverage_mode=metadata.get("coverage_mode", mode),
+                   plan_mode=read_json(Path(row["dir"]) / "manifest.json", {}).get("plan_mode"),
+                   tier=parameters.get("tier", "legacy"),
+                   complete=metadata.get("complete") is True,
+                   complete_eligible=metadata.get("complete_eligible") is True)
+    return ok(rows)
 
 
 @router.get("/contacts/{cid}/versions/diff")

@@ -156,3 +156,32 @@ def test_full_raw_gate_and_sampled_complete_guard_precede_writes(app, imported, 
     else:
         raise AssertionError("sampled must not replace complete")
     assert app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"] == before
+
+
+async def test_versions_view_exposes_full_and_legacy_sampled_labels(app, imported, tmp_path):
+    from types import SimpleNamespace
+
+    from echotrace.api.routes import versions
+
+    contact_id, _ = imported
+    full = tmp_path / "full"
+    legacy = tmp_path / "legacy"
+    write_json(full / "metadata.json", {"distill_mode": "full", "complete": False})
+    write_json(full / "manifest.json", {"plan_mode": "Chunked"})
+    write_json(full / "parameters.json", {"tier": "standard"})
+    write_json(legacy / "metadata.json", {"sampled": 50})
+    write_json(legacy / "parameters.json", {"tier": "quick"})
+    for version, path, active in ((1, legacy, 0), (2, full, 1)):
+        app.state.db.execute(
+            "INSERT INTO personas(contact_id,version,created_at,model,thinking,token_cost,dir,summary,active) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (contact_id, version, version, "mock", "low", 0, str(path), "fixture", active),
+        )
+
+    response = await versions(SimpleNamespace(app=app), contact_id)
+    current, old = response["data"]
+
+    assert (current["distill_mode"], current["plan_mode"], current["complete"]) == (
+        "full", "Chunked", False)
+    assert (old["distill_mode"], old["tier"], old["complete"]) == (
+        "sampled", "quick", False)
