@@ -8,6 +8,7 @@ from pathlib import Path
 
 from echotrace.distill.evidence import EvidenceIndex
 from echotrace.distill.extraction import extract
+from echotrace.distill.full_reduce import map_chunk, reduce_findings
 from echotrace.distill.nuwa import NuwaWorkflow
 from echotrace.distill.persona import person, read_quotes
 from echotrace.distill.planner import PLANNER_VERSION, budgets_for_views, plan_full_chunks
@@ -309,6 +310,9 @@ class Pipeline:
             "source_fingerprint": plan.source_fingerprint, "scope": scope,
             "planner_version": plan.planner_version, "plan_mode": plan.mode,
             "fragmented": plan.fragmented,
+            "map_total": len(paths), "map_succeeded": 0, "failed_chunks": [],
+            "reduce_layers": None, "evidence_validated": False,
+            "phase4_complete": False,
         }
         write_json(target / "manifest.json", manifest)
         validate_full_coverage(self.db, cid, target, manifest)
@@ -443,7 +447,7 @@ class Pipeline:
                       "base_url": settings["base_url"], "adapter": settings["adapter"], "thinking_values": settings["thinking_values"],
                       "thinking_field": settings["thinking_field"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
                       "prompts": {name: hashlib.sha256(self.llm.template(name).encode()).hexdigest() for name in
-                                  ("distill_chunk", "extract_quotes", "distill_persona", "distill_radar", "distill_skill", "self_style")},
+                                  ("distill_chunk", "full_map", "full_reduce", "extract_quotes", "distill_persona", "distill_radar", "distill_skill", "self_style")},
                       "tier": payload.get("tier", "standard")}
         if "mode" in payload:
             parameters["distill_mode"] = distill_mode
@@ -451,6 +455,7 @@ class Pipeline:
         parameters = checkpoint_parameters(target / "parameters.json", parameters,
             "续跑参数与检查点不一致。请恢复原参数，或取消任务后新建蒸馏。")
         completed = 0
+        map_states = {}
         async def process(filename):
             nonlocal completed
             self.jobs.check(job_id)
@@ -464,18 +469,34 @@ class Pipeline:
                     raise AppError("PLANNER_REQUEST_MISMATCH",
                                    "完整分片的 Prompt、预算或模型容量已变化，已在发送前停止。")
             input_messages = messages if send_raw else summary_messages(messages)
-            fingerprint = hashlib.sha256(dumps([input_messages, parameters, self.llm.template("distill_chunk"), self.llm.template("extract_quotes")]).encode()).hexdigest()
+            map_prompt = self.llm.template("full_map" if full_mode else "distill_chunk")
+            fingerprint = hashlib.sha256(dumps([input_messages, parameters, map_prompt, self.llm.template("extract_quotes")]).encode()).hexdigest()
             cache = root / "cache" / (fingerprint + ".json")
             checkpoint = target / "chunks" / filename
             result = read_json(checkpoint) or read_json(cache)
             if not result:
-                observations = await extract(self.llm, self.jobs, job_id, payload, "distill_chunk",
-                    {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw},
-                    target / "chunks" / (filename + ".observations.json"), fingerprint)
+                if full_mode:
+                    descriptor = manifest["chunk_descriptors"][manifest["chunks"].index(filename)]
+                    owned_ids = {messages[index]["id"] for index in descriptor["new_indexes"]}
+                    state = await map_chunk(self.llm, self.jobs, job_id, payload, input_messages,
+                                            owned_ids, target / "chunks" / (filename + ".map.json"), fingerprint)
+                    map_states[filename] = state
+                    if state["status"] != "succeeded":
+                        completed += 1
+                        return
+                    observations = state["output"]
+                else:
+                    observations = await extract(self.llm, self.jobs, job_id, payload, "distill_chunk",
+                        {"target_name": contact["display_name"] if send_raw else "B", "messages": input_messages, "summary_only": not send_raw},
+                        target / "chunks" / (filename + ".observations.json"), fingerprint)
                 quotes = await extract(self.llm, self.jobs, job_id, payload, "extract_quotes", {"messages": messages, "target": "them"},
                     target / "chunks" / (filename + ".quotes.json"), fingerprint) if send_raw else {"quotes": []}
-                result = {"observations": observations["observations"], "quotes": quotes["quotes"]}
+                result = {"observations": observations["findings" if full_mode else "observations"], "quotes": quotes["quotes"]}
+                if full_mode:
+                    result["phase4_map_status"] = "succeeded"
                 write_json(cache, result)
+            if full_mode and filename not in map_states:
+                map_states[filename] = {"status": result.get("phase4_map_status", "failed")}
             write_json(checkpoint, result)
             completed += 1
             self.jobs.progress(job_id, f"抽取证据 {completed}/{len(manifest['chunks'])}", .1 + .45 * completed / len(manifest["chunks"]))
@@ -493,10 +514,29 @@ class Pipeline:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
         canonical_payloads = validate_full_coverage(self.db, cid, target, manifest) if full_mode else None
+        reduced_observations = None
+        if full_mode:
+            failed = [{"chunk": filename, "error": map_states.get(filename, {}).get("error", {"code": "MAP_INCOMPLETE"})}
+                      for filename in manifest["chunks"] if map_states.get(filename, {}).get("status") != "succeeded"]
+            manifest.update(map_total=len(manifest["chunks"]), map_succeeded=len(manifest["chunks"]) - len(failed),
+                            failed_chunks=failed, reduce_layers=None, evidence_validated=not failed,
+                            phase4_complete=False)
+            write_json(target / "manifest.json", manifest)
+            if failed:
+                raise AppError("PHASE4_INCOMPLETE", "full Map 存在失败片；检查点和失败原因已保留。")
+            mapped = [item for filename in manifest["chunks"]
+                      for item in read_json(target / "chunks" / filename)["observations"]]
+            reduce_fingerprint = hashlib.sha256(dumps([mapped, parameters, self.llm.template("full_reduce")]).encode()).hexdigest()
+            reduced = await reduce_findings(self.llm, self.jobs, job_id, payload, mapped,
+                                             canonical_payloads, target / "full_reduce.json", reduce_fingerprint)
+            reduced_observations = [*reduced["output"]["findings"], *reduced["output"].get("contradictions", [])]
+            manifest.update(reduce_layers=reduced["reduce_layers"], evidence_validated=True,
+                            phase4_complete=True)
+            write_json(target / "manifest.json", manifest)
         index = EvidenceIndex(target, canonical_payloads)
         await finish_thread(index.build, lambda: self.jobs.check(job_id))
         # Preserve the exact packet used by already completed aggregate checkpoints.
-        observations = read_json(target / "observations.json")
+        observations = reduced_observations or read_json(target / "observations.json")
         if observations is None:
             observations = await asyncio.to_thread(index.select)
         write_json(target / "observations.json", observations)

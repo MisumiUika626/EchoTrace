@@ -7,8 +7,8 @@ from echotrace.llm.client import build_request
 from echotrace.llm.tokenizer import count_tokens
 from echotrace.util import AppError
 
-PLANNER_VERSION = "full-dual-stage-v1"
-STAGES = ("distill_chunk", "extract_quotes")
+PLANNER_VERSION = "full-open-map-v2"
+STAGES = ("full_map", "extract_quotes")
 
 
 @dataclass(frozen=True)
@@ -28,9 +28,8 @@ class FullPlan:
 
 
 def stage_context(stage, views, target_name, settings):
-    if stage == "distill_chunk":
-        return {"target_name": target_name, "messages": views,
-                "summary_only": bool(settings.get("summary_only", False))}
+    if stage == "full_map":
+        return {"messages": views}
     if stage == "extract_quotes":
         return {"messages": views, "target": "them"}
     raise AppError("INVALID_PROMPT", "完整分片规划只支持观察与语录阶段。")

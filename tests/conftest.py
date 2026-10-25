@@ -41,6 +41,14 @@ class FakeModel:
         if stage == "Chunk":
             selected = [m for m in messages if m["sender"] in ("them", "B")][:6]
             output = {"observations": [{**claim([m["id"]], m["text"]), "dimension": "events" if "周末" in m["text"] else "expression_dna", "quote": m["text"], "date": "2026-01-01"} for m in selected], "open_questions": []}
+        elif stage == "FullMap":
+            selected = [m for m in messages if m["sender"] in ("them", "B")][:12]
+            output = {"findings": [{**claim([m["id"]], m["text"]), "topic": "开放观察",
+                                     "source_kind": "direct", "quote": m["text"]}
+                                    for m in selected], "open_questions": []}
+        elif stage == "FullReduce":
+            output = {"findings": context["findings"][:24], "contradictions": [],
+                      "unknowns": ["虚构记录之外未知"]}
         elif stage == "Quotes":
             output = {"quotes": [{"evidence": [m["id"]], "text": m["text"], "topic": "虚构约定", "reuse": 8, "emotion": 7, "relation": 8, "info": 8, "reason": "保留虚构原话", "sensitive": False} for m in messages if m["sender"] == "them" and m["kind"] == "text"][:5]}
         elif stage == "Persona":

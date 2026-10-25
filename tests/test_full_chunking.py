@@ -1,5 +1,7 @@
 from dataclasses import asdict
 
+import pytest
+
 from echotrace.distill.pipeline import (
     Pipeline,
     assert_distill_start_allowed,
@@ -35,7 +37,7 @@ def test_full_plan_is_deterministic_and_whole_has_no_overlap(app, imported):
     assert first.mode == "Whole"
     assert len(first.chunks) == 1
     assert first.chunks[0].new_indexes == tuple(range(len(first.chunks[0].views)))
-    assert set(first.chunks[0].budgets) == {"distill_chunk", "extract_quotes"}
+    assert set(first.chunks[0].budgets) == {"full_map", "extract_quotes"}
 
 
 def test_full_plan_obeys_both_stages_and_bounds_overlap(app, imported):
@@ -93,8 +95,102 @@ def test_prepare_full_persists_body_free_descriptors_and_validates(app, imported
     assert len(canonical) == 600
     assert manifest["sampled"] == manifest["total"] == 600
     assert all("text" not in descriptor for descriptor in manifest["chunk_descriptors"])
-    assert all(set(descriptor["stage_budgets"]) == {"distill_chunk", "extract_quotes"}
+    assert all(set(descriptor["stage_budgets"]) == {"full_map", "extract_quotes"}
                for descriptor in manifest["chunk_descriptors"])
+
+
+async def test_full_pipeline_uses_phase4_and_persists_complete_phase4_manifest(app, imported, model, monkeypatch):
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import active_dir
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    await app.state.pipeline._run(job_id, {
+        "contact_id": contact_id, "consent": True, "token_limit": 2_000_000,
+        "mode": "full", "send_raw": True,
+    })
+    target = active_dir(app.state.db, contact_id)
+    manifest = read_json(target / "manifest.json")
+    stages = [stage for stage, _, _ in model.calls]
+
+    assert "FullMap" in stages and "FullReduce" in stages
+    assert "Chunk" not in stages
+    assert manifest["map_total"] == manifest["map_succeeded"] == len(manifest["chunks"])
+    assert manifest["failed_chunks"] == []
+    assert manifest["reduce_layers"] in (0, 1)
+    assert manifest["evidence_validated"] is True
+    assert manifest["phase4_complete"] is True
+
+
+async def test_failed_full_map_records_incomplete_manifest_and_stops_publish(app, imported, model, monkeypatch):
+    import httpx
+    import echotrace.llm.client as client_module
+    import echotrace.distill.pipeline as pipeline_module
+    from echotrace.distill.persona import person
+    from test_large_distill import extraction_job
+
+    async def no_wait(_):
+        pass
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+    original = model
+
+    def invalid_map(request):
+        response = original(request)
+        if original.calls[-1][0] == "FullMap":
+            body = response.json()
+            body["choices"][0]["message"]["content"] = '{"findings":[{"bad":true}],"open_questions":[]}'
+            return httpx.Response(200, json=body)
+        return response
+
+    app.state.llm.transport = httpx.MockTransport(invalid_map)
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    payload = {
+        "contact_id": contact_id, "consent": True, "token_limit": 2_000_000,
+        "mode": "full", "send_raw": True,
+    }
+    with pytest.raises(AppError) as error:
+        await app.state.pipeline._run(job_id, payload)
+    target = app.state.db.root / "people" / person(app.state.db, contact_id)["slug"] / "versions" / "v1"
+    manifest = read_json(target / "manifest.json")
+
+    assert error.value.code == "PHASE4_INCOMPLETE"
+    assert manifest["map_succeeded"] < manifest["map_total"]
+    assert manifest["failed_chunks"]
+    assert manifest["evidence_validated"] is False
+    assert manifest["phase4_complete"] is False
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM personas WHERE contact_id=?", (contact_id,))["n"] == 0
+
+
+async def test_sampled_pipeline_keeps_legacy_map_route(app, imported, model, monkeypatch):
+    import echotrace.distill.pipeline as pipeline_module
+    from test_large_distill import extraction_job
+
+    async def direct_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module.asyncio, "to_thread", direct_thread)
+    contact_id, _ = imported
+    job_id = extraction_job(app.state)
+    await app.state.pipeline._run(job_id, {
+        "contact_id": contact_id, "consent": True, "token_limit": 2_000_000,
+        "mode": "sampled", "send_raw": True,
+    })
+
+    stages = [stage for stage, _, _ in model.calls]
+    assert "Chunk" in stages
+    assert "FullMap" not in stages and "FullReduce" not in stages
 
 
 def test_validate_full_coverage_rejects_mutated_fragment(app, imported, tmp_path):

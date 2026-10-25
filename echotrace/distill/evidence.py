@@ -58,11 +58,12 @@ class EvidenceIndex:
                     ts = min(lookup[mid]["ts"] for mid in item["evidence"])
                     date = datetime.fromtimestamp(ts, TZ).date().isoformat()
                     observation = {**item, "date": date}
+                    dimension = item.get("dimension", item.get("topic", "open"))
                     # Identical wording at another date/source is a distinct record.
-                    key = hashlib.sha256(dumps([observation["value"], observation["dimension"],
+                    key = hashlib.sha256(dumps([observation["value"], dimension,
                                               sorted(observation["evidence"]), date, observation.get("quote")]).encode()).hexdigest()
                     conn.execute("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?)",
-                                 (key, item["dimension"], date[:7], ts, dumps(observation)))
+                                 (key, dimension, date[:7], ts, dumps(observation)))
             conn.execute("INSERT INTO metadata VALUES('identity',?)", (identity,))
         staging.replace(self.path)
         with closing(sqlite3.connect(self.path)) as conn:
