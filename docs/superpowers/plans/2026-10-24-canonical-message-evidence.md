@@ -200,7 +200,7 @@ Commit message: `feat: use stable evidence ids across distillation`
 **Interfaces:**
 - Documents verified behavior and remaining Phase 2+ gaps without upgrading unverified claims.
 
-- [ ] **Step 1: Update documentation with verified scope and migration limits**
+- [x] **Step 1: Update documentation with verified scope and migration limits**
 
 Describe strict decoding, source-order Evidence IDs, fingerprints, legacy migration boundaries and unchanged sampled/fixed chunk behavior.
 
@@ -210,13 +210,13 @@ Run: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -p pytest_asyncio.plugin
 
 Expected: zero failures; report warnings separately.
 
-- [ ] **Step 3: Run production build**
+- [x] **Step 3: Run production build**
 
 Run: `python scripts/build.py`
 
 Expected: Python checks, TypeScript checks and production asset packaging exit 0.
 
-- [ ] **Step 4: Check repository diff integrity**
+- [x] **Step 4: Check repository diff integrity**
 
 Run: `git diff --check && git status --short`
 
