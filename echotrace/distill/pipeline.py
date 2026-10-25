@@ -1,23 +1,24 @@
 import asyncio
 import hashlib
-import json
 import shutil
 import time
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from echotrace.distill.evidence import EvidenceIndex
+from echotrace.distill.extraction import extract
+from echotrace.distill.nuwa import NuwaWorkflow
 from echotrace.distill.persona import person, read_quotes
+from echotrace.distill.planner import budgets_for_views, plan_full_chunks
 from echotrace.distill.radar import score, timeline_events
 from echotrace.distill.skill_writer import write_skill
-from echotrace.distill.nuwa import NuwaWorkflow
-from echotrace.distill.extraction import extract
-from echotrace.distill.evidence import EvidenceIndex
+from echotrace.ingest.canonical import canonical_messages, message_fingerprint, model_message
 from echotrace.ingest.parsers import TZ
-from echotrace.ingest.canonical import canonical_messages
 from echotrace.llm.client import estimate_tokens
 from echotrace.rag.indexer import from_model, rebuild
 from echotrace.stats import calculate
-from echotrace.util import AppError, atomic_write, dumps, now, read_json, write_json, finish_thread
+from echotrace.util import AppError, atomic_write, dumps, finish_thread, now, read_json, write_json
 
 
 def checkpoint_parameters(path, current, message):
@@ -83,6 +84,79 @@ def bounded_examples(messages, budget=5000):
             selected.append(excerpt)
             used += cost
     return selected
+
+
+def _scoped_rows(db, contact_id, scope):
+    rows = canonical_messages(db, contact_id)["messages"]
+    return [row for row in rows
+            if (not scope.get("start") or row["ts"] >= int(scope["start"]))
+            and (not scope.get("end") or row["ts"] <= int(scope["end"]))]
+
+
+def validate_full_coverage(db, contact_id, target, manifest):
+    """Validate persisted input views against canonical storage, then return full rows."""
+    def invalid(detail):
+        raise AppError("INVALID_FULL_COVERAGE", f"完整分片覆盖校验失败：{detail}")
+
+    rows = _scoped_rows(db, contact_id, manifest.get("scope") or {})
+    if manifest.get("source_fingerprint") != message_fingerprint(rows):
+        invalid("源消息指纹已变化")
+    expected = {row["evidence_id"]: model_message(row) for row in rows}
+    covered, order = {}, []
+    for index, filename in enumerate(manifest.get("chunks", [])):
+        descriptor = manifest.get("chunk_descriptors", [])[index]
+        views = read_json(target / "inputs" / filename)
+        new_indexes = descriptor.get("new_indexes", [])
+        if not new_indexes or len(set(new_indexes)) != len(new_indexes):
+            invalid("分片缺少唯一首次覆盖索引")
+        if any(position < 0 or position >= len(views) for position in new_indexes):
+            invalid("首次覆盖索引越界")
+        for position, view in enumerate(views):
+            if position in new_indexes:
+                continue
+            source = expected.get(view.get("id"))
+            if source is None or "fragment_index" in view or view != source:
+                invalid("重叠只能复制授权范围内的完整原消息")
+        for position in new_indexes:
+            view = views[position]
+            evidence_id = view.get("id")
+            if evidence_id not in expected:
+                invalid("Evidence ID 不属于授权范围")
+            key = (evidence_id, view.get("fragment_index"))
+            if key in covered:
+                invalid("首次覆盖重复")
+            covered[key] = view
+            order.append((view.get("sequence"), view.get("fragment_index", -1)))
+    if order != sorted(order):
+        invalid("首次覆盖顺序变化")
+    for evidence_id, source in expected.items():
+        items = [view for (item_id, _), view in covered.items() if item_id == evidence_id]
+        if not items:
+            invalid(f"{evidence_id} 未覆盖")
+        if len(items) == 1 and "fragment_index" not in items[0]:
+            if items[0] != source:
+                invalid(f"{evidence_id} 正文或元数据变化")
+            continue
+        items.sort(key=lambda item: item.get("fragment_index", -1))
+        count = len(items)
+        if [item.get("fragment_index") for item in items] != list(range(count)):
+            invalid(f"{evidence_id} 片段索引不连续")
+        if any(item.get("fragment_count") != count for item in items):
+            invalid(f"{evidence_id} 片段总数不一致")
+        offset = 0
+        for item in items:
+            if item.get("fragment_offset") != offset or not item.get("text"):
+                invalid(f"{evidence_id} 片段偏移错误")
+            comparable = {key: value for key, value in item.items()
+                          if key not in ("text", "fragment_index", "fragment_count", "fragment_offset")}
+            if comparable != {key: value for key, value in source.items() if key != "text"}:
+                invalid(f"{evidence_id} 片段元数据变化")
+            offset += len(item["text"])
+        if "".join(item["text"] for item in items) != source["text"]:
+            invalid(f"{evidence_id} 片段无法逐字重组")
+    if len({item_id for item_id, _ in covered}) != len(expected):
+        invalid("覆盖范围与授权范围不一致")
+    return [model_message(row) for row in rows]
 
 
 class Pipeline:
@@ -160,6 +234,50 @@ class Pipeline:
                     "source_revision": person(self.db, cid)["revision"],
                     "source_count": self.db.one("SELECT msg_count FROM sessions WHERE contact_id=?", (cid,))["msg_count"]}
         write_json(target / "manifest.json", manifest)
+        return manifest
+
+    def prepare_full(self, cid, target, payload, stats, settings, target_name, check=lambda: None):
+        root = target / "inputs"
+        root.mkdir(parents=True, exist_ok=True)
+        existing = read_json(target / "manifest.json")
+        source = person(self.db, cid)
+        if existing:
+            if existing.get("source_revision") != source["revision"]:
+                raise AppError("RESUME_SOURCE_CHANGED", "聊天记录或发言人已变化，旧检查点不能继续。请取消旧任务并重新蒸馏。")
+            if existing.get("planner_version") is None:
+                raise AppError("RESUME_SETTINGS_CHANGED", "完整分片检查点缺少规划器版本，请新建任务。")
+            validate_full_coverage(self.db, cid, target, existing)
+            return existing
+        scope = payload.get("scope") or {}
+        rows = _scoped_rows(self.db, cid, scope)
+        plan = plan_full_chunks(self.llm, rows, settings, target_name)
+        paths, descriptors = [], []
+        for index, chunk in enumerate(plan.chunks):
+            check()
+            filename = f"{index:05d}.json"
+            write_json(root / filename, list(chunk.views))
+            paths.append(filename)
+            descriptors.append({
+                "index": index,
+                "new_indexes": list(chunk.new_indexes),
+                "sequence_start": min(chunk.views[position]["sequence"] for position in chunk.new_indexes),
+                "sequence_end": max(chunk.views[position]["sequence"] for position in chunk.new_indexes),
+                "overlap_messages": len(chunk.views) - len(chunk.new_indexes),
+                "stage_budgets": {stage: asdict(budget) for stage, budget in chunk.budgets.items()},
+            })
+        views = [model_message(row) for row in rows]
+        manifest = {
+            "chunks": paths, "chunk_descriptors": descriptors,
+            "sampled": len(rows), "total": stats["total"],
+            "self_examples": bounded_examples([view for view in views if view["sender"] == "me"]),
+            "source_revision": source["revision"],
+            "source_count": self.db.one("SELECT msg_count FROM sessions WHERE contact_id=?", (cid,))["msg_count"],
+            "source_fingerprint": plan.source_fingerprint, "scope": scope,
+            "planner_version": plan.planner_version, "plan_mode": plan.mode,
+            "fragmented": plan.fragmented,
+        }
+        write_json(target / "manifest.json", manifest)
+        validate_full_coverage(self.db, cid, target, manifest)
         return manifest
 
     async def run(self, job_id, payload):
@@ -277,7 +395,17 @@ class Pipeline:
             raise AppError("NOT_ENOUGH_DATA", "至少需要200条消息才能蒸馏。")
         write_json(target / "stats.json", stats)
         recent = await asyncio.to_thread(calculate, self.db, cid, max(stats["first_ts"], stats["last_ts"] - 30 * 86400), stats["last_ts"])
-        manifest = await finish_thread(self.prepare, cid, target, payload, stats, lambda: self.jobs.check(job_id))
+        full_mode = payload.get("mode") == "full"
+        if full_mode:
+            if not send_raw:
+                raise AppError("FULL_REQUIRES_RAW_TEXT", "full 模式需要授权范围内的完整原文。")
+            manifest = await finish_thread(
+                self.prepare_full, cid, target, payload, stats, settings,
+                contact["display_name"], lambda: self.jobs.check(job_id),
+            )
+        else:
+            manifest = await finish_thread(self.prepare, cid, target, payload, stats,
+                                           lambda: self.jobs.check(job_id))
         parameters = {"model": settings["model"], "thinking": settings["thinking"], "send_raw": send_raw,
                       "base_url": settings["base_url"], "adapter": settings["adapter"], "thinking_values": settings["thinking_values"],
                       "thinking_field": settings["thinking_field"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
@@ -292,6 +420,14 @@ class Pipeline:
             nonlocal completed
             self.jobs.check(job_id)
             messages = read_json(target / "inputs" / filename)
+            if full_mode:
+                descriptor = manifest["chunk_descriptors"][manifest["chunks"].index(filename)]
+                current = {stage: asdict(budget) for stage, budget in
+                           budgets_for_views(self.llm, messages, settings,
+                                             contact["display_name"]).items()}
+                if current != descriptor["stage_budgets"]:
+                    raise AppError("PLANNER_REQUEST_MISMATCH",
+                                   "完整分片的 Prompt、预算或模型容量已变化，已在发送前停止。")
             input_messages = messages if send_raw else summary_messages(messages)
             fingerprint = hashlib.sha256(dumps([input_messages, parameters, self.llm.template("distill_chunk"), self.llm.template("extract_quotes")]).encode()).hexdigest()
             cache = root / "cache" / (fingerprint + ".json")
@@ -321,7 +457,8 @@ class Pipeline:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        index = EvidenceIndex(target)
+        canonical_payloads = validate_full_coverage(self.db, cid, target, manifest) if full_mode else None
+        index = EvidenceIndex(target, canonical_payloads)
         await finish_thread(index.build, lambda: self.jobs.check(job_id))
         # Preserve the exact packet used by already completed aggregate checkpoints.
         observations = read_json(target / "observations.json")

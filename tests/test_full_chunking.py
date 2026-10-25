@@ -1,7 +1,10 @@
 from dataclasses import asdict
 
+from echotrace.distill.pipeline import Pipeline, validate_full_coverage
 from echotrace.distill.planner import plan_full_chunks
 from echotrace.ingest.canonical import canonical_messages
+from echotrace.stats import calculate
+from echotrace.util import AppError, read_json, write_json
 
 
 def _settings(context_window=16_384, **changes):
@@ -70,3 +73,48 @@ def test_full_plan_fragments_long_message_with_exact_offsets(app, imported):
     ]
     assert all(view["fragment_count"] == len(fragments) for view in fragments)
     assert all(len(chunk.views) == len(chunk.new_indexes) for chunk in plan.chunks)
+
+
+def test_prepare_full_persists_body_free_descriptors_and_validates(app, imported, tmp_path):
+    contact_id, _ = imported
+    target = tmp_path / "v1"
+    stats = calculate(app.state.db, contact_id)
+    pipeline = Pipeline(app.state.db, app.state.config, app.state.jobs, app.state.llm)
+
+    manifest = pipeline.prepare_full(contact_id, target, {"scope": {}}, stats,
+                                     _settings(), "B")
+    canonical = validate_full_coverage(app.state.db, contact_id, target, manifest)
+
+    assert len(canonical) == 600
+    assert manifest["sampled"] == manifest["total"] == 600
+    assert all("text" not in descriptor for descriptor in manifest["chunk_descriptors"])
+    assert all(set(descriptor["stage_budgets"]) == {"distill_chunk", "extract_quotes"}
+               for descriptor in manifest["chunk_descriptors"])
+
+
+def test_validate_full_coverage_rejects_mutated_fragment(app, imported, tmp_path):
+    contact_id, _ = imported
+    long_text = "长消息XYZ\n" * 15_000
+    app.state.db.execute(
+        "UPDATE messages SET text=? WHERE sequence=0 AND session_id IN "
+        "(SELECT id FROM sessions WHERE contact_id=?)", (long_text, contact_id))
+    app.state.db.execute(
+        "DELETE FROM messages WHERE sequence<>0 AND session_id IN "
+        "(SELECT id FROM sessions WHERE contact_id=?)", (contact_id,))
+    app.state.db.execute("UPDATE sessions SET msg_count=1 WHERE contact_id=?", (contact_id,))
+    target = tmp_path / "v1"
+    pipeline = Pipeline(app.state.db, app.state.config, app.state.jobs, app.state.llm)
+    manifest = pipeline.prepare_full(contact_id, target, {"scope": {}},
+                                     {"total": 1}, _settings(), "B")
+    path = target / "inputs" / manifest["chunks"][0]
+    views = read_json(path)
+    position = manifest["chunk_descriptors"][0]["new_indexes"][0]
+    views[position]["text"] += "篡改"
+    write_json(path, views)
+
+    try:
+        validate_full_coverage(app.state.db, contact_id, target, manifest)
+    except AppError as error:
+        assert error.code == "INVALID_FULL_COVERAGE"
+    else:
+        raise AssertionError("mutated full input must be rejected")

@@ -9,7 +9,6 @@ from echotrace.ingest.parsers import TZ
 from echotrace.llm.client import estimate_tokens
 from echotrace.util import dumps, read_json, write_json
 
-
 DIMENSION_FILTERS = {
     "01-persona.md": ("personality", "interests"),
     "02-conversations.md": ("relationship", "emotion"),
@@ -21,8 +20,9 @@ DIMENSION_FILTERS = {
 
 
 class EvidenceIndex:
-    def __init__(self, target):
+    def __init__(self, target, canonical_messages=None):
         self.target, self.path = target, target / "evidence.sqlite"
+        self.canonical_messages = canonical_messages
 
     def build(self, check=lambda: None):
         manifest = read_json(self.target / "manifest.json")
@@ -41,13 +41,18 @@ class EvidenceIndex:
                 CREATE TABLE observations(id TEXT PRIMARY KEY, dimension TEXT, period TEXT, ts INTEGER, payload TEXT);
                 CREATE INDEX observation_group ON observations(dimension,period,ts,id);
             """)
+            if self.canonical_messages is not None:
+                conn.executemany("INSERT INTO messages VALUES(?,?,?,?)",
+                                 ((m["id"], m["sequence"], m["ts"], dumps(m))
+                                  for m in self.canonical_messages))
             for filename in manifest["chunks"]:
                 check()
                 messages = read_json(self.target / "inputs" / filename)
                 lookup = {m["id"]: m for m in messages}
-                conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?,?)",
-                                 ((m["id"], m.get("sequence", index), m["ts"], dumps(m))
-                                  for index, m in enumerate(messages)))
+                if self.canonical_messages is None:
+                    conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?,?)",
+                                     ((m["id"], m.get("sequence", index), m["ts"], dumps(m))
+                                      for index, m in enumerate(messages)))
                 chunk = read_json(self.target / "chunks" / filename)
                 for item in chunk["observations"]:
                     ts = min(lookup[mid]["ts"] for mid in item["evidence"])
