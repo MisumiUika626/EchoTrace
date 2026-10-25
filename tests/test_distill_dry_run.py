@@ -48,8 +48,8 @@ def test_dry_run_is_deterministic_and_prompt_changes_boundaries(app, imported, t
     assert dumps(first) == dumps(second)
 
     prompt_dir = app.state.config.prompt_dir()
-    original = app.state.llm.template("distill_chunk")
-    (prompt_dir / "distill_chunk.md").write_text(original + "\n额外静态规则" * 1200, encoding="utf-8")
+    original = app.state.llm.template("full_map")
+    (prompt_dir / "full_map.md").write_text(original + "\n额外静态规则" * 1200, encoding="utf-8")
     changed = dry_run_distill(app.state.db, app.state.config, app.state.llm, contact_id, options)
 
     assert [c["sequence_end"] for c in changed["chunks"]] != [c["sequence_end"] for c in first["chunks"]]
@@ -84,7 +84,7 @@ def test_packer_fragments_one_long_message_without_losing_text(app, imported):
 def test_impossible_static_overhead_emits_no_chunks(app, imported):
     contact_id, _ = imported
     prompt_dir = app.state.config.prompt_dir()
-    (prompt_dir / "distill_chunk.md").write_text("规则" * 30_000 + "\n{{schema}}\n{{context}}", encoding="utf-8")
+    (prompt_dir / "full_map.md").write_text("规则" * 30_000 + "\n{{schema}}\n{{context}}", encoding="utf-8")
 
     with pytest.raises(AppError) as error:
         dry_run_distill(app.state.db, app.state.config, app.state.llm, contact_id, _options(16_384))

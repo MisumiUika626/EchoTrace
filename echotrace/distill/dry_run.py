@@ -15,7 +15,7 @@ class PackedChunk:
 
 def pack_message_views(llm, rows, settings):
     plan = plan_full_chunks(llm, rows, settings, "B", overlap_messages=0)
-    chunks = [PackedChunk(list(chunk.views), chunk.budgets["distill_chunk"],
+    chunks = [PackedChunk(list(chunk.views), chunk.budgets["full_map"],
                           len(chunk.new_indexes)) for chunk in plan.chunks]
     return chunks, plan.fragmented
 
@@ -48,7 +48,7 @@ def _descriptor(index, chunk):
         "fragmented_messages": len({view["id"] for view in fragments}),
         "stages": {stage: _budget_descriptor(budget)
                    for stage, budget in chunk.budgets.items()},
-        "estimated_request_tokens": chunk.budgets["distill_chunk"].request_tokens,
+        "estimated_request_tokens": chunk.budgets["full_map"].request_tokens,
     }
 
 
@@ -68,7 +68,7 @@ def dry_run_distill(db, config, llm, contact_id, options):
             for row in raw_messages
         ]
     plan = plan_full_chunks(llm, messages, settings, options.get("target_name", "B"))
-    first = plan.chunks[0].budgets["distill_chunk"]
+    first = plan.chunks[0].budgets["full_map"]
     return {
         "mode": plan.mode,
         "planner_version": plan.planner_version,
