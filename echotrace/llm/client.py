@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import json
-import math
 import re
 from pathlib import Path
 
@@ -15,8 +14,8 @@ from echotrace.util import AppError, dumps, now, read_json, write_json
 
 
 def estimate_tokens(value):
-    text = value if isinstance(value, str) else dumps(value)
-    return math.ceil(sum(1 if ord(c) > 127 else .3 for c in text))
+    from echotrace.llm.tokenizer import count_tokens
+    return count_tokens(value).tokens
 
 
 def adapter_parameters(llm):

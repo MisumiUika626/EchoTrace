@@ -97,7 +97,8 @@ def model():
 @pytest.fixture
 def app(tmp_path, model):
     app = create_app(tmp_path / "data", llm_transport=httpx.MockTransport(model))
-    app.state.config.update({"llm": {"base_url": "http://fiction.invalid/v1", "api_key": "fiction-secret"}, "privacy": {"acknowledged": True}})
+    app.state.config.update({"llm": {"base_url": "http://fiction.invalid/v1", "api_key": "fiction-secret",
+                                      "context_window_confirmed": True}, "privacy": {"acknowledged": True}})
     return app
 
 
