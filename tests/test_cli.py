@@ -49,6 +49,12 @@ def test_cli_against_live_local_service(app, imported, model, monkeypatch):
         while not server.started and time.monotonic() < deadline:
             time.sleep(.02)
         assert server.started
+        before_calls = len(model.calls)
+        result = run_cli("distill", "--port", port, "--contact", cid, "--dry-run")
+        assert result.returncode == 0, result.stderr + result.stdout
+        diagnostic = json.loads(result.stdout)
+        assert diagnostic["mode"] in ("Whole", "Chunked") and diagnostic["chunks"]
+        assert len(model.calls) == before_calls
         result = run_cli("distill", "--port", port, "--contact", cid, "--consent", "--tier", "quick")
         assert result.returncode == 0, result.stderr + result.stdout
         job = json.loads(result.stdout.splitlines()[-1])

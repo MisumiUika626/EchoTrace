@@ -1,7 +1,7 @@
 """Deterministic, offline planning for full distillation requests."""
 from dataclasses import dataclass
 
-from echotrace.ingest.canonical import canonical_messages, model_message
+from echotrace.ingest.canonical import canonical_messages, message_fingerprint, model_message
 from echotrace.llm.budget import RequestBudget, plan_request_budget
 from echotrace.llm.client import adapter_parameters
 from echotrace.llm.nuwa_skill import nuwa_instructions
@@ -72,39 +72,38 @@ def pack_message_views(llm, rows, settings):
     """Greedily pack source-order views; fragment only an unsplittable message."""
     # Prove that the static envelope can hold at least some content before emitting chunks.
     _budget(llm, settings, [])
-    units = []
+    units = [model_message(row) for row in rows]
     fragmented = {}
-    for row in rows:
-        view = model_message(row)
-        if _fits(llm, settings, [view]):
-            units.append(view)
+    chunks, position = [], 0
+    while position < len(units):
+        low, high = position + 1, len(units)
+        best_end, best_budget = position, None
+        while low <= high:
+            middle = (low + high) // 2
+            budget = _fits(llm, settings, units[position:middle])
+            if budget:
+                best_end, best_budget, low = middle, budget, middle + 1
+            else:
+                high = middle - 1
+        if best_end == position:
+            view = units[position]
+            if "fragment_index" in view:
+                raise AppError("REQUEST_OVERHEAD_TOO_LARGE", "消息片段无法放入空数据片。")
+            text, fragments = view["text"], []
+            while text:
+                size, _ = _largest_prefix(llm, settings, view, text)
+                fragments.append({**view, "text": text[:size]})
+                text = text[size:]
+            count = len(fragments)
+            fragmented[view["id"]] = count
+            units[position:position + 1] = [
+                {**fragment, "fragment_index": index, "fragment_count": count}
+                for index, fragment in enumerate(fragments)
+            ]
             continue
-        text = view["text"]
-        fragments = []
-        while text:
-            size, _ = _largest_prefix(llm, settings, view, text)
-            fragments.append({**view, "text": text[:size]})
-            text = text[size:]
-        count = len(fragments)
-        fragmented[view["id"]] = count
-        units.extend({**fragment, "fragment_index": index, "fragment_count": count}
-                     for index, fragment in enumerate(fragments))
-
-    chunks, current = [], []
-    current_budget = None
-    for unit in units:
-        candidate = [*current, unit]
-        budget = _fits(llm, settings, candidate)
-        if budget:
-            current, current_budget = candidate, budget
-            continue
-        if not current:
-            raise AppError("REQUEST_OVERHEAD_TOO_LARGE", "消息片段无法放入空数据片。")
-        chunks.append(PackedChunk(current, current_budget, len(current)))
-        current = [unit]
-        current_budget = _budget(llm, settings, current)
-    if current:
-        chunks.append(PackedChunk(current, current_budget, len(current)))
+        views = units[position:best_end]
+        chunks.append(PackedChunk(views, best_budget, len(views)))
+        position = best_end
     return chunks, fragmented
 
 
@@ -127,16 +126,27 @@ def _descriptor(index, chunk, fragmented):
 def dry_run_distill(db, config, llm, contact_id, options):
     """Return non-sensitive diagnostics without secrets, network, or artifact writes."""
     canonical = canonical_messages(db, contact_id)
-    if not canonical["messages"]:
+    scope = options.get("scope") or {}
+    raw_messages = [row for row in canonical["messages"]
+                    if (not scope.get("start") or row["ts"] >= int(scope["start"]))
+                    and (not scope.get("end") or row["ts"] <= int(scope["end"]))]
+    if not raw_messages:
         raise AppError("NOT_ENOUGH_DATA", "没有可用于蒸馏的消息。")
     settings = dict(options)
-    chunks, fragmented = pack_message_views(llm, canonical["messages"], settings)
+    messages = raw_messages
+    if settings.get("summary_only"):
+        messages = [
+            {**row, "sender": "A" if row["sender"] == "me" else "B",
+             "text": f"[匿名统计：{row['kind']}消息，{len(row['text'])}字]"}
+            for row in raw_messages
+        ]
+    chunks, fragmented = pack_message_views(llm, messages, settings)
     first = chunks[0].budget
     return {
         "mode": "Whole" if len(chunks) == 1 else "Chunked",
         "source": {
-            "messages": len(canonical["messages"]),
-            "messages_sha256": canonical["messages_sha256"],
+            "messages": len(raw_messages),
+            "messages_sha256": message_fingerprint(raw_messages),
             "sources": len(canonical["sources"]),
         },
         "capacity": {

@@ -1,4 +1,5 @@
 import pytest
+import httpx
 
 from echotrace.distill.dry_run import dry_run_distill, pack_message_views
 from echotrace.util import AppError, dumps
@@ -98,6 +99,40 @@ def test_no_fixed_message_count_cap(app, imported):
 
     assert result["chunks"][0]["new_messages"] == 600
     assert result["chunks"][0]["sequence_end"] == 599
+
+
+async def test_dry_run_api_reads_no_secret_calls_no_provider_and_writes_nothing(app, imported, monkeypatch):
+    from echotrace import config as config_module
+
+    contact_id, _ = imported
+    message = app.state.db.one(
+        "SELECT text FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE contact_id=?) ORDER BY sequence LIMIT 1",
+        (contact_id,),
+    )["text"]
+    original_read = config_module.read_json
+
+    def reject_secret(path, default=None):
+        if path == app.state.config.secrets_path:
+            raise AssertionError("dry-run must not read secrets")
+        return original_read(path, default)
+
+    def reject_provider(request):
+        raise AssertionError(f"dry-run made provider request: {request.url}")
+
+    app.state.llm.transport = httpx.MockTransport(reject_provider)
+    app.state.db.execute("UPDATE settings SET value=json_set(value,'$.acknowledged',0) WHERE key='privacy'")
+    monkeypatch.setattr(config_module, "read_json", reject_secret)
+    before_files = sorted(str(path.relative_to(app.state.db.root)) for path in app.state.db.root.rglob("*"))
+    before_jobs = app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(f"/api/contacts/{contact_id}/distill/dry-run", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["mode"] in ("Whole", "Chunked")
+    assert message not in response.text
+    assert "fiction-secret" not in response.text
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"] == before_jobs
+    assert sorted(str(path.relative_to(app.state.db.root)) for path in app.state.db.root.rglob("*")) == before_files
 
 
 def _keys(value):

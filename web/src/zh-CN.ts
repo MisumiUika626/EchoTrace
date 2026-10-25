@@ -22,6 +22,8 @@ export const t = {
   summaryWarning: '摘要模式不发送原文，画像质量会显著下降；不会自动抽取原话语料。', consent: '我同意本次将所选上下文发送给设置中的模型服务商',
   privacyExplain: '导入与浏览都在本机进行。只有你主动使用蒸馏、求助或模拟对话时，相关内容才会发送到你配置的模型服务商。图片和语音文件不会发送。',
   start: '确认，开始蒸馏', needModel: '先到设置页配置模型服务', notEnough: '至少需要 200 条消息才能蒸馏',
+  dryRun: '本机预演', dryRunMode: '请求模式', dryRunChunks: '预计分片',
+  dryRunApproximate: '当前使用可复现的估算器，结果已标记为 approximate。', dryRunExact: '当前使用匹配的 tokenizer。',
   radarCaption: '文本里的关系信号', radarNote: '这些指标是文本统计与模型推断，不是心理测评，也不能代替真实交流。',
   anchor: '统计锚点', modelScore: '模型判断', combined: '综合分', divergence: '统计与模型存在偏差', trend: '月度变化', trendNote: '月度曲线展示本地统计锚点，未将当前模型判断套用到过去。',
   period: '观察范围', last365: '近一年', last90: '近90天', last30: '近30天', rangeNote: '近期范围截至该版本最后一条记录；区间只展示本地统计。', localPeriod: '所选范围的统计锚点', localPeriodNote: '该范围未单独调用模型评分，置信度与模型解读请切回全部查看。', timeline: '关系大事记', timelineNote: '日期取自证据消息的发言日期，不等同于事件实际发生日期。', noEvents: '当前版本没有足够证据重建事件。', dimension: '查看维度', rising: '上升', flat: '平稳', falling: '下降', quoteSearch: '搜索重要话语与共同记忆…', quoteEmpty: '还没有重要话语',

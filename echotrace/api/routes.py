@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from echotrace.distill.persona import active_dir, artifact, person, read_quotes
+from echotrace.distill.dry_run import dry_run_distill
 from echotrace.distill.skill_writer import FILES, install_skill, quality_check
 from echotrace.ingest.cleaner import import_files, preview
 from echotrace.ingest.qce_client import RELEASES
@@ -53,6 +54,13 @@ class DistillStart(BaseModel):
     tier: str = Field(default="standard", pattern="^(quick|standard|deep)$")
     scope: dict = {}
     token_limit: int = Field(default=500000, ge=10000, le=100000000)
+
+
+class DistillDryRun(BaseModel):
+    send_raw: bool = True
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    thinking: str | None = Field(default=None, pattern="^(low|medium|high|max)$")
+    scope: dict = {}
 
 
 class JobResume(BaseModel):
@@ -331,6 +339,18 @@ async def export_contact(request: Request, cid: int, format: str = "jsonl"):
 @router.get("/contacts/{cid}/distill/estimate")
 async def estimate(request: Request, cid: int, tier: str = "standard"):
     return ok(services(request).pipeline.estimate(cid, tier))
+
+
+@router.post("/contacts/{cid}/distill/dry-run")
+async def distill_dry_run(request: Request, cid: int, payload: DistillDryRun):
+    s = services(request)
+    person(s.db, cid)
+    settings = s.config.get_offline()["llm"]
+    settings.update({key: value for key, value in payload.model_dump(exclude_none=True).items()
+                     if key in ("model", "thinking")})
+    settings["summary_only"] = not payload.send_raw
+    settings["scope"] = payload.scope
+    return ok(dry_run_distill(s.db, s.config, s.llm, cid, settings))
 
 
 @router.post("/contacts/{cid}/distill")

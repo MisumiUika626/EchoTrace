@@ -81,16 +81,23 @@ class Config:
         self.lock = threading.RLock()
         self.secrets_path = self.root / ".secrets.json"
 
-    def get(self, secrets=False):
+    def get_offline(self):
+        """Load persisted public settings without opening the secret store."""
         result = copy.deepcopy(DEFAULTS)
         import json
         for row in self.db.rows("SELECT * FROM settings"):
             if row["key"] in result:
                 result[row["key"]].update(json.loads(row["value"]))
+        result["llm"]["api_key"] = ""
+        result["qce"]["token"] = ""
+        result["data_dir"] = str(self.root)
+        return result
+
+    def get(self, secrets=False):
+        result = self.get_offline()
         keys = read_json(self.secrets_path, {})
         for group, key in (("llm", "api_key"), ("qce", "token")):
             result[group][key] = keys.get(group, "") if secrets else ("****" if keys.get(group) else "")
-        result["data_dir"] = str(self.root)
         return result
 
     def update(self, patch):
