@@ -1,6 +1,8 @@
 """Deterministic Evidence checks and aggregation for full distillation."""
 from copy import deepcopy
 
+from echotrace.util import AppError, read_json, write_json
+
 
 def _speaker(message):
     return message.get("sender")
@@ -54,4 +56,28 @@ def deduplicate_findings(items):
             current["confidence"] = item["confidence"]
         if not current.get("quote") and item.get("quote"):
             current["quote"] = item["quote"]
+    return result
+
+
+async def map_chunk(llm, jobs, job_id, payload, messages, owned_ids, path, fingerprint):
+    """Run a full Map request with one repair opportunity and durable state."""
+    saved = read_json(path)
+    if saved and saved.get("fingerprint") == fingerprint and saved.get("status") == "succeeded":
+        return saved
+    allowed_ids = {message["id"] for message in messages}
+    try:
+        output = await llm.call(
+            "full_map",
+            {"messages": messages},
+            allowed_ids,
+            job_id,
+            payload,
+            lambda document: validate_findings(document, messages, allowed_ids, owned_ids),
+            max_attempts=2,
+        )
+        result = {"fingerprint": fingerprint, "status": "succeeded", "output": output}
+    except AppError as exc:
+        result = {"fingerprint": fingerprint, "status": "failed",
+                  "error": {"code": exc.code, "message": exc.message}}
+    write_json(path, result)
     return result

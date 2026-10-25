@@ -1,7 +1,12 @@
+import json
+
+import httpx
 import pytest
 
-from echotrace.distill.full_reduce import deduplicate_findings, validate_findings
+from echotrace.distill.full_reduce import deduplicate_findings, map_chunk, validate_findings
 from echotrace.llm.schemas import SCHEMAS
+from echotrace.util import dumps, read_json
+from test_large_distill import extraction_job
 
 
 def _messages():
@@ -85,3 +90,65 @@ def test_owned_ids_prevent_overlap_only_observation_from_becoming_new_output():
     with pytest.raises(ValueError, match="首次覆盖"):
         validate_findings(document, _messages(), {"m000001", "m000002", "m000003"},
                           owned_ids={"m000003"})
+
+
+async def test_full_map_repairs_once_then_reuses_success_checkpoint(app, tmp_path, monkeypatch):
+    import echotrace.llm.client as client_module
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", no_wait)
+    calls = []
+
+    def provider(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        output = {"findings": [_finding(evidence=["m999999"] if len(calls) == 1 else ["m000002"])],
+                  "open_questions": []}
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": dumps(output)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        })
+
+    app.state.llm.transport = httpx.MockTransport(provider)
+    job_id = extraction_job(app.state)
+    path = tmp_path / "map.json"
+    first = await map_chunk(app.state.llm, app.state.jobs, job_id, {}, _messages(),
+                            {"m000002"}, path, "same")
+    second = await map_chunk(app.state.llm, app.state.jobs, job_id, {}, _messages(),
+                             {"m000002"}, path, "same")
+
+    assert first == second
+    assert first["status"] == "succeeded"
+    assert len(calls) == 2
+    assert "校验失败" in calls[1]["messages"][-1]["content"]
+
+
+async def test_full_map_stops_after_one_failed_repair_and_records_failure(app, tmp_path, monkeypatch):
+    import echotrace.llm.client as client_module
+
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", no_wait)
+    calls = []
+
+    def provider(request):
+        calls.append(1)
+        output = {"findings": [_finding(evidence=["m999999"])], "open_questions": []}
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": dumps(output)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        })
+
+    app.state.llm.transport = httpx.MockTransport(provider)
+    job_id = extraction_job(app.state)
+    path = tmp_path / "failed-map.json"
+    result = await map_chunk(app.state.llm, app.state.jobs, job_id, {}, _messages(),
+                             {"m000002"}, path, "same")
+
+    assert len(calls) == 2
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "LLM_OUTPUT_INVALID"
+    assert read_json(path) == result

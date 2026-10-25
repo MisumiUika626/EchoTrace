@@ -8,7 +8,8 @@ from echotrace.util import AppError
 
 
 OUTPUT_TARGETS = {
-    "distill_chunk": 4096, "extract_quotes": 4096, "distill_persona": 8192,
+    "distill_chunk": 4096, "full_map": 4096, "full_reduce": 8192,
+    "extract_quotes": 4096, "distill_persona": 8192,
     "distill_radar": 4096, "self_style": 4096, "distill_skill": 8192,
     "nuwa_research": 8192, "nuwa_synthesize": 12288, "nuwa_test_plan": 4096,
     "nuwa_respond": 4096, "nuwa_evaluate": 4096, "nuwa_refine": 4096,

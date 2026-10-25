@@ -118,7 +118,8 @@ class LLMClient:
                 errors.append({"index": index, "item": item, "error": detail})
         return {"field": field, "document": document, "errors": errors} if errors else None
 
-    async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None, *, output_growth=False, normalizer=None):
+    async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None, *, output_growth=False, normalizer=None,
+                   max_attempts=None):
         settings = self.settings(override)
         instruction = nuwa_instructions(stage)
         request = build_request(self, stage, settings, context)
@@ -199,8 +200,11 @@ class LLMClient:
         growth = min(7, max(0, read_json(growth_path, {}).get("growth", 0))) if expand_leaf else 0
         failures = 0
         last_error, raw, last_code = "", "", "LLM_OUTPUT_INVALID"
+        attempt_limit = 10 if expand_leaf else (max_attempts if max_attempts is not None else 3)
+        if attempt_limit < 1:
+            raise ValueError("max_attempts must be positive")
         async with httpx.AsyncClient(timeout=settings["timeout"], transport=self.transport, trust_env=False, follow_redirects=False) as client:
-            for attempt in range(10 if expand_leaf else 3):
+            for attempt in range(attempt_limit):
                 if job_id:
                     self.jobs.check(job_id)
                 request["max_tokens"], input_estimate = allowance(stage, settings, estimate_tokens, request, growth)
@@ -271,7 +275,7 @@ class LLMClient:
                         # leaves grow up to the effective ceiling (at most 8 caps).
                         next_cap, _ = allowance(stage, settings, estimate_tokens, request, growth + 1)
                         if ((stage in ("distill_chunk", "extract_quotes") and not expand_leaf)
-                                or (growth >= 7 if expand_leaf else attempt == 2)
+                                or (growth >= 7 if expand_leaf else attempt == attempt_limit - 1)
                                 or next_cap <= request["max_tokens"]):
                             raise
                         growth += 1
@@ -308,9 +312,9 @@ class LLMClient:
                         async with self.budget_lock:
                             self.reserved[job_id] = max(0, self.reserved.get(job_id, 0) - reservation)
                 failures += 1
-                if failures >= 3:
+                if failures >= min(3, attempt_limit):
                     break
-                if attempt < (9 if expand_leaf else 2):
+                if attempt < attempt_limit - 1:
                     await asyncio.sleep(2 ** (failures - 1))
         if raw:
             suffix = hashlib.sha256(dumps(context).encode()).hexdigest()[:12]
