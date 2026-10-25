@@ -7,9 +7,9 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
-from echotrace.llm.schemas import SCHEMAS
-from echotrace.llm.nuwa_skill import nuwa_instructions
 from echotrace.llm.budget import allowance
+from echotrace.llm.nuwa_skill import nuwa_instructions
+from echotrace.llm.schemas import SCHEMAS
 from echotrace.util import AppError, dumps, now, read_json, write_json
 
 
@@ -34,6 +34,21 @@ def adapter_parameters(llm):
         current = current[key]
     current[field.split(".")[-1]] = value
     return result
+
+
+def build_request(llm, stage, settings, context):
+    """Build the exact initial provider request used by planning and live calls."""
+    instruction = nuwa_instructions(stage)
+    messages = ([{"role": "system", "content": instruction}] if instruction else [])
+    messages.append({"role": "user", "content": llm.render(stage, context)})
+    return {
+        "model": settings["model"],
+        "temperature": settings["temperature"],
+        "max_tokens": settings["max_tokens"],
+        "response_format": {"type": "json_object"},
+        "messages": messages,
+        **adapter_parameters(settings),
+    }
 
 
 class LLMClient:
@@ -105,11 +120,9 @@ class LLMClient:
 
     async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None, *, output_growth=False, normalizer=None):
         settings = self.settings(override)
-        prompt = self.render(stage, context)
         instruction = nuwa_instructions(stage)
-        initial_messages = ([{"role": "system", "content": instruction}] if instruction else []) + [{"role": "user", "content": prompt}]
-        request = {"model": settings["model"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
-                   "response_format": {"type": "json_object"}, "messages": initial_messages, **adapter_parameters(settings)}
+        request = build_request(self, stage, settings, context)
+        initial_messages = request["messages"]
         identity = [stage, context, initial_messages, {k: v for k, v in settings.items()
                     if k not in ("api_key", "max_tokens", "timeout", "context_window", "concurrency")}]
         recovery = self.db.root / "review" / ("repair-" + hashlib.sha256(dumps(identity).encode()).hexdigest() + ".json")
