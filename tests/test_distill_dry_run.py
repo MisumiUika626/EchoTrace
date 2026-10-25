@@ -125,10 +125,14 @@ async def test_dry_run_api_reads_no_secret_calls_no_provider_and_writes_nothing(
     before_files = sorted(str(path.relative_to(app.state.db.root)) for path in app.state.db.root.rglob("*"))
     before_jobs = app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"]
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
-        response = await client.post(f"/api/contacts/{contact_id}/distill/dry-run", json={})
+        response = await client.post(
+            f"/api/contacts/{contact_id}/distill/dry-run",
+            json={"context_window": 16_384, "context_window_confirmed": True, "max_tokens": 4_096},
+        )
 
     assert response.status_code == 200, response.text
     assert response.json()["data"]["mode"] in ("Whole", "Chunked")
+    assert response.json()["data"]["capacity"]["context"] == 16_384
     assert message not in response.text
     assert "fiction-secret" not in response.text
     assert app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"] == before_jobs

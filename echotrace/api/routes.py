@@ -60,6 +60,9 @@ class DistillDryRun(BaseModel):
     send_raw: bool = True
     model: str | None = Field(default=None, min_length=1, max_length=200)
     thinking: str | None = Field(default=None, pattern="^(low|medium|high|max)$")
+    context_window: int | None = Field(default=None, ge=16384, le=2097152)
+    context_window_confirmed: bool | None = None
+    max_tokens: int | None = Field(default=None, ge=256, le=393216)
     scope: dict = {}
 
 
@@ -347,7 +350,7 @@ async def distill_dry_run(request: Request, cid: int, payload: DistillDryRun):
     person(s.db, cid)
     settings = s.config.get_offline()["llm"]
     settings.update({key: value for key, value in payload.model_dump(exclude_none=True).items()
-                     if key in ("model", "thinking")})
+                     if key in ("model", "thinking", "context_window", "context_window_confirmed", "max_tokens")})
     settings["summary_only"] = not payload.send_raw
     settings["scope"] = payload.scope
     return ok(dry_run_distill(s.db, s.config, s.llm, cid, settings))
@@ -451,11 +454,18 @@ async def quotes(request: Request, cid: int, q: str = "", topic: str | None = No
 async def quote_add(request: Request, cid: int, payload: dict):
     s = services(request)
     mid = int(payload["message_id"])
+    source = s.db.one(
+        "SELECT m.evidence_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? AND m.id=?", (cid, mid),
+    )
+    if not source:
+        raise AppError("INVALID_EVIDENCE", "消息不属于此人物。")
     context = window(s.db, cid, mid)
-    message = next(m for m in context if m["id"] == mid)
-    qid = stable_id(f"pick:{cid}:{mid}")
+    evidence_id = source["evidence_id"]
+    message = next(m for m in context if m["id"] == evidence_id)
+    qid = stable_id(f"pick:{cid}:{evidence_id}")
     q = {"id": qid, "contact_id": cid, "people_id": cid, "text": message["text"], "start_msg": context[0]["id"], "end_msg": context[-1]["id"],
-         "evidence": [mid], "score": 10, "dims": {"reuse": 10, "emotion": 10, "relation": 10, "info": 10}, "source": "user_pick",
+         "evidence": [evidence_id], "score": 10, "dims": {"reuse": 10, "emotion": 10, "relation": 10, "info": 10}, "source": "user_pick",
          "ts": message["ts"], "speaker": message["sender"], "topic": payload.get("topic", "手动收藏"), "sensitive": False}
     existing = s.db.rows("SELECT * FROM quotes WHERE contact_id=?", (cid,))
     for row in existing:

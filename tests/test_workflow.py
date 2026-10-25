@@ -37,13 +37,14 @@ async def test_full_fictional_workflow_versions_cache_and_evidence(app, model):
     assert {item["period"] for item in metrics["ranges"]} == {"last_365", "last_90", "last_30"}
     assert metrics["timeline"]
     for event in metrics["timeline"]:
-        assert event["ts"] == min(s.db.one("SELECT ts FROM messages WHERE id=?", (mid,))["ts"] for mid in event["evidence"])
-    foreign = import_files(s.db, s.config, [FIXTURE], "另一位虚构人物", "other-fiction", ["fiction-me"])["contact_id"]
-    assert timeline_events(s.db, foreign, json.loads((root / "observations.json").read_text(encoding="utf-8"))) == []
+        assert event["ts"] == min(s.db.one("SELECT ts FROM messages WHERE evidence_id=?", (mid,))["ts"] for mid in event["evidence"])
+    observations = json.loads((root / "observations.json").read_text(encoding="utf-8"))
+    invalid = [{**item, "evidence": ["m999999"]} for item in observations]
+    assert timeline_events(s.db, cid, invalid) == []
     quotes = search(s.db, s.config, cid, "周末一起去", 8)
     assert quotes and all(q["contact_id"] == cid for q in quotes)
     assert all(len(q["context"]) <= 7 for q in quotes)
-    own_ids = {r["id"] for r in s.db.rows("SELECT id FROM messages")}
+    own_ids = {r["evidence_id"] for r in s.db.rows("SELECT evidence_id FROM messages")}
     assert all(set(q["evidence"]) <= own_ids for q in quotes)
     advice = await s.advisor.advise(cid, {"consent": True, "draft": "周末怎么约看展"})
     assert {x["strategy"] for x in advice["options"]} == {"safe", "warm", "honest"}
@@ -213,9 +214,9 @@ async def test_skill_only_new_version_preserves_other_artifacts(app, imported, m
 async def test_scoped_distillation_months_keep_the_selected_range(app, imported):
     cid, _ = imported
     s = app.state
-    messages = s.db.rows("SELECT id,ts FROM messages ORDER BY ts,id")
+    messages = s.db.rows("SELECT evidence_id,ts FROM messages ORDER BY ts,id")
     scope = {"start": messages[100]["ts"], "end": messages[499]["ts"]}
-    selected = {m["id"] for m in messages if scope["start"] <= m["ts"] <= scope["end"]}
+    selected = {m["evidence_id"] for m in messages if scope["start"] <= m["ts"] <= scope["end"]}
     await finish(s, s.jobs.create("distill", {"contact_id": cid, "consent": True, "token_limit": 2000000, "scope": scope}))
     metrics = json.loads((active_dir(s.db, cid) / "metrics.json").read_text(encoding="utf-8"))
     assert sum(month["sample"] for month in metrics["monthly"]) == len(selected)
@@ -255,7 +256,13 @@ async def test_cross_person_evidence_and_manual_quote_survives_rollback(app, imp
     s = app.state
     await finish(s, s.jobs.create("distill", {"contact_id": cid, "consent": True, "token_limit": 2000000}))
     other = tmp_path / "other.jsonl"
-    other.write_text(json.dumps({"msgId": "other-1", "timestamp": 1767229200, "sender": {"uid": "other", "name": "另一个虚构人"}, "content": "只能属于另一个人的测试语料"}, ensure_ascii=False), encoding="utf-8")
+    rows = [
+        {"msgId": "other-1", "timestamp": 1767229200,
+         "sender": {"uid": "other", "name": "另一个虚构人"}, "content": "只能属于另一个人的测试语料"},
+        {"msgId": "other-2", "timestamp": 1767229260,
+         "sender": {"uid": "me", "name": "我"}, "content": "只用于确认双人身份的虚构回复"},
+    ]
+    other.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
     imported_other = import_files(s.db, s.config, [other], "另一个虚构人", "other", ["me"])
     other_cid = imported_other["contact_id"]
     mid = s.db.one("SELECT m.id FROM messages m JOIN sessions s ON m.session_id=s.id WHERE s.contact_id=?", (other_cid,))["id"]
