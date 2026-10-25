@@ -51,6 +51,7 @@ export const t = {
   modelService: '模型服务', baseUrl: 'Base URL', baseUrlHint: '填写包含 /v1 的 OpenAI 兼容接口基址', apiKey: 'API Key', temperature: '温度',
   maxOutputTokens: '单次输出上限（token）', maxOutputTokensHint: '最高可设 393216（384K），请按服务商限制填写。系统按阶段分配输出额度，并在完整上下文窗口内预留预算；思考也占用输出额度。抽取截断会拆分分片，汇总截断最多逐步扩容重试两次，每次用量均计入任务总预算。',
   contextWindow: '模型上下文窗口（token）', contextWindowHint: '请填写服务商支持的输入与输出合计窗口，默认 131072。完整请求含系统提示词、schema、证据及修复材料，按估算值加 25% 和安全余量检查；实际分词仍以服务商为准。',
+  contextWindowConfirmed: '我已向当前服务商确认此容量', contextWindowConfirmedHint: '官方模型与官方地址可使用内置元数据；第三方地址、别名或未知模型必须明确确认，EchoTrace 不会猜测容量。',
   maxOutputTokensRange: '请输入 256–393216（384K）之间的整数。', adjustOutputLimit: '调整单次输出上限',
   adapter: '思考参数适配器', adapterEffort: 'reasoning_effort', adapterBudget: 'thinking.budget_tokens', adapterCustom: '自定义字段', adapterNone: '不发送思考参数',
   thinkingField: '实际参数字段', thinkingValues: '深度映射（JSON）', actual: '当前适配器实际发送的参数', actualHint: '不同服务商支持不同参数，Max 是否生效需以服务商接口为准。',

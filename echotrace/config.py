@@ -13,7 +13,8 @@ DEFAULTS = {
     "llm": {"base_url": "", "model": DEFAULT_MODEL, "thinking": "max", "temperature": 0.2,
             "adapter": "reasoning_effort", "thinking_field": "reasoning_effort",
             "thinking_values": {"low": "low", "medium": "medium", "high": "high", "max": "max"},
-            "timeout": 120, "concurrency": 2, "max_tokens": 8192, "context_window": 131072},
+            "timeout": 120, "concurrency": 2, "max_tokens": 8192, "context_window": 131072,
+            "context_window_confirmed": False},
     "qce": {"base_url": "http://127.0.0.1:40653"},
     "privacy": {"allow_raw": True, "summary_only": False, "acknowledged": False},
     "cleaning": {"filter_system": True, "merge_repeats": True, "truncate_at": 2000},
@@ -43,6 +44,7 @@ class ModelSettings(BaseModel):
     concurrency: int = Field(ge=1, le=4)
     max_tokens: int = Field(ge=256, le=393216)
     context_window: int = Field(default=131072, ge=16384, le=2097152)
+    context_window_confirmed: bool = False
 
 
 class PrivacySettings(BaseModel):
