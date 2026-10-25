@@ -228,3 +228,25 @@ async def test_full_reduce_refuses_a_second_intermediate_layer(app, tmp_path):
 
     assert error.value.code == "REDUCE_CONTEXT_TOO_LARGE"
     assert calls and all(call["intermediate"] is True for call in calls)
+
+
+async def test_intermediate_checkpoints_are_bound_to_group_content(app, tmp_path):
+    app.state.config.update({"llm": {"context_window": 16384, "max_tokens": 4096}})
+    path = tmp_path / "reduce.json"
+    first_findings = _many_findings()
+    first_calls = []
+    app.state.llm.transport = httpx.MockTransport(_reduce_provider(first_calls, preserve=True))
+    job_id = extraction_job(app.state)
+    with pytest.raises(AppError, match="一层中间归并"):
+        await reduce_findings(app.state.llm, app.state.jobs, job_id, {}, first_findings,
+                              _messages(), path, "first")
+
+    second_findings = [{**item, "value": item["value"].replace("甲", "乙")}
+                       for item in first_findings]
+    second_calls = []
+    app.state.llm.transport = httpx.MockTransport(_reduce_provider(second_calls))
+    result = await reduce_findings(app.state.llm, app.state.jobs, job_id, {}, second_findings,
+                                   _messages(), path, "second")
+
+    assert result["status"] == "succeeded"
+    assert second_calls and result["output"]["findings"][0]["value"].endswith("乙" * 560)

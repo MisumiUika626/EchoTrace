@@ -1,9 +1,10 @@
 """Deterministic Evidence checks and aggregation for full distillation."""
+import hashlib
 from copy import deepcopy
 
 from echotrace.llm.budget import plan_request_budget
 from echotrace.llm.client import build_request
-from echotrace.util import AppError, read_json, write_json
+from echotrace.util import AppError, dumps, read_json, write_json
 
 
 def _speaker(message):
@@ -154,10 +155,18 @@ async def reduce_findings(llm, jobs, job_id, payload, findings, messages, path, 
     for index, group in enumerate(groups):
         jobs.check(job_id)
         checkpoint = path.with_name(path.name + f".group-{index}.json")
-        group_output = read_json(checkpoint)
-        if group_output is None:
+        group_fingerprint = hashlib.sha256(dumps([
+            fingerprint,
+            index,
+            group,
+            llm.template("full_reduce"),
+        ]).encode()).hexdigest()
+        saved_group = read_json(checkpoint)
+        if saved_group and saved_group.get("fingerprint") == group_fingerprint:
+            group_output = saved_group.get("output")
+        else:
             group_output = await _call_reduce(llm, job_id, payload, group, messages, True)
-            write_json(checkpoint, group_output)
+            write_json(checkpoint, {"fingerprint": group_fingerprint, "output": group_output})
         intermediate_findings.extend(group_output.get("findings", []))
         intermediate_findings.extend(group_output.get("contradictions", []))
     intermediate_findings = deduplicate_findings(intermediate_findings)
