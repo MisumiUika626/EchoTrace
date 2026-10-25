@@ -45,7 +45,7 @@ class LLMClient:
     def template(self, name):
         if name not in SCHEMAS:
             raise AppError("INVALID_PROMPT", "未知提示词模板。")
-        candidates = [self.config.prompt_dir() / f"{name}.md", Path.cwd() / "prompts" / f"{name}.md",
+        candidates = [self.config.root / "prompts" / f"{name}.md", Path.cwd() / "prompts" / f"{name}.md",
                       Path(__file__).parents[1] / "templates" / f"{name}.md"]
         for path in candidates:
             if path.exists():

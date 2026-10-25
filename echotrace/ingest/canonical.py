@@ -7,6 +7,18 @@ from echotrace.util import AppError, dumps
 FINGERPRINT_FIELDS = ("sequence", "evidence_id", "msg_id", "ts", "sender", "text", "kind")
 
 
+def model_message(row):
+    """Return the stable fields allowed in a model-facing message view."""
+    return {
+        "id": row["evidence_id"],
+        "sequence": row["sequence"],
+        "ts": row["ts"],
+        "sender": row["sender"],
+        "text": row["text"],
+        "kind": row["kind"],
+    }
+
+
 def message_fingerprint(rows):
     digest = hashlib.sha256()
     digest.update(b'{"messages":[')
