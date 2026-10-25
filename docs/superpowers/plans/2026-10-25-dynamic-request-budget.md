@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-25-dynamic-request-budget-design.md`
 
+**Status:** Tasks 1–5 implemented and verified on 2026-10-25; remote push remains the final delivery step.
+
 ## Global Constraints
 
 - Implement only v13 Phase 2; do not switch production distillation to Whole/Chunked or implement Phase 3 overlap execution.
