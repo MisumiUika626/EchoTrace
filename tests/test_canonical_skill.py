@@ -4,6 +4,7 @@ import pytest
 
 from echotrace.distill.canonical_skill import (
     REQUIRED_CANONICAL_FILES,
+    build_distill_manifest,
     validate_canonical_skill,
 )
 from echotrace.util import write_json
@@ -114,3 +115,123 @@ def test_derived_artifacts_must_exist_and_keep_evidence_in_scope(tmp_path):
     assert outside["complete"] is False
     assert outside["gates"]["derived_consistent"] is False
     assert "m999999" in outside["failures"]
+
+
+def test_formal_manifest_records_v13_required_facts_without_guessing():
+    internal = {
+        "sources": [{"file": "fixture.txt", "sha256": "source-sha", "provenance": "upload"}],
+        "source_fingerprint": "messages-sha",
+        "scope": {"start": 10, "end": 20},
+        "sampled": 600,
+        "total": 600,
+        "chunks": ["00000.json", "00001.json"],
+        "map_total": 2,
+        "map_succeeded": 2,
+        "failed_chunks": [],
+        "fragmented": {"m000003": 3},
+        "plan_mode": "Chunked",
+        "evidence_validated": True,
+        "phase4_complete": True,
+        "chunk_descriptors": [{
+            "stage_budgets": {"full_map": {
+                "context_capacity": 131072,
+                "capacity_source": "explicit",
+                "capacity_verified": True,
+                "estimator": "characters-v1",
+                "approximate": True,
+                "output_reserve": 4096,
+                "safety_margin": 1311,
+            }},
+        }],
+    }
+    parameters = {
+        "model": "fiction-model",
+        "prompts": {"full_map": "prompt-sha"},
+        "nuwa_template_version": "echotrace-nuwa-local-v1",
+    }
+    metadata = {
+        "contact_id": 7,
+        "session_id": "person-7",
+        "distill_mode": "full",
+        "tokens": 3210,
+    }
+    canonical = {
+        "complete": True,
+        "gates": {"canonical_files": True, "evidence_valid": True},
+        "failures": [],
+    }
+    result = build_distill_manifest(
+        internal=internal,
+        parameters=parameters,
+        metadata=metadata,
+        nuwa_report={"method": "echotrace-nuwa-local-v1", "status": "passed"},
+        quality={"passed": True, "semantic_passed": True},
+        canonical=canonical,
+        skill_path="skill/SKILL.md",
+        built_at="2026-10-25T12:00:00+08:00",
+    )
+
+    assert result["schema_version"] == "echotrace-distill-v13"
+    assert result["person"] == {"contact_id": 7, "session_id": "person-7"}
+    assert result["built_at"] == "2026-10-25T12:00:00+08:00"
+    assert result["input"] == {
+        "sources": internal["sources"],
+        "source_fingerprints": ["source-sha"],
+        "normalized_messages_sha256": "messages-sha",
+        "scope": {"start": 10, "end": 20},
+    }
+    assert result["mode"] == "full"
+    assert result["coverage"] == {
+        "total_messages": 600,
+        "first_covered_messages": 600,
+        "plan_mode": "Chunked",
+        "chunks": 2,
+        "chunks_succeeded": 2,
+        "failed_chunks": [],
+        "fragmented_messages": 1,
+        "long_message_fragments": 3,
+    }
+    assert result["model"] == {
+        "id": "fiction-model",
+        "prompt_sha256": {"full_map": "prompt-sha"},
+        "nuwa_method": "echotrace-nuwa-local-v1",
+        "nuwa_template_version": "echotrace-nuwa-local-v1",
+    }
+    assert result["budget"] == {
+        "tokenizer_or_estimator": "characters-v1",
+        "context_capacity": 131072,
+        "capacity_source": "explicit",
+        "capacity_verified": True,
+        "output_reserve": 4096,
+        "safety_margin": 1311,
+        "approximate": True,
+    }
+    assert result["usage"] == {"tokens": 3210}
+    assert result["evidence"] == {"validated": True, "phase4_complete": True}
+    assert result["nuwa"] == {"status": "passed", "format_passed": True, "semantic_passed": True}
+    assert result["skill_path"] == "skill/SKILL.md"
+    assert result["gates"] == canonical["gates"]
+    assert result["failures"] == []
+    assert result["complete"] is True
+    assert result["optional_unknown"] is None
+
+
+def test_formal_manifest_keeps_missing_legacy_facts_unknown_and_sampled_incomplete():
+    result = build_distill_manifest(
+        internal={"chunks": ["00000.json"], "sampled": 100, "total": 600},
+        parameters={},
+        metadata={"distill_mode": "sampled"},
+        nuwa_report={},
+        quality={},
+        canonical={"complete": True, "gates": {"canonical_files": True}, "failures": []},
+        skill_path="skill/SKILL.md",
+        built_at="2026-10-25T13:00:00+08:00",
+    )
+
+    assert result["complete"] is False
+    assert result["input"]["normalized_messages_sha256"] is None
+    assert result["budget"]["context_capacity"] is None
+    assert result["budget"]["approximate"] is None
+    assert result["usage"]["tokens"] is None
+    assert result["coverage"]["chunks_succeeded"] is None
+    assert result["legacy_note"] == "缺失字段保持 unknown；sampled 仅为预览。"

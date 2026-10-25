@@ -108,3 +108,84 @@ def validate_canonical_skill(
         "derived_consistent": not missing_derived and not invalid_derived,
     }
     return {"gates": gates, "complete": all(gates.values()), "failures": failures}
+
+
+def build_distill_manifest(
+    *,
+    internal: dict,
+    parameters: dict,
+    metadata: dict,
+    nuwa_report: dict,
+    quality: dict,
+    canonical: dict,
+    skill_path: str,
+    built_at: str,
+) -> dict:
+    """Consolidate authoritative task facts without database or provider access."""
+    sources = internal.get("sources") or []
+    descriptors = internal.get("chunk_descriptors") or []
+    first_budget = {}
+    if descriptors:
+        stages = descriptors[0].get("stage_budgets") or {}
+        first_budget = stages.get("full_map") or next(iter(stages.values()), {})
+    fragmented = internal.get("fragmented") or {}
+    mode = metadata.get("distill_mode")
+    complete = mode == "full" and canonical.get("complete") is True
+    return {
+        "schema_version": "echotrace-distill-v13",
+        "person": {
+            "contact_id": metadata.get("contact_id"),
+            "session_id": metadata.get("session_id"),
+        },
+        "built_at": built_at,
+        "input": {
+            "sources": sources,
+            "source_fingerprints": [source.get("sha256") for source in sources
+                                    if source.get("sha256")],
+            "normalized_messages_sha256": internal.get("source_fingerprint"),
+            "scope": internal.get("scope") or {},
+        },
+        "mode": mode,
+        "coverage": {
+            "total_messages": internal.get("total"),
+            "first_covered_messages": internal.get("sampled"),
+            "plan_mode": internal.get("plan_mode"),
+            "chunks": len(internal.get("chunks") or []),
+            "chunks_succeeded": internal.get("map_succeeded"),
+            "failed_chunks": internal.get("failed_chunks") or [],
+            "fragmented_messages": len(fragmented),
+            "long_message_fragments": sum(fragmented.values()),
+        },
+        "model": {
+            "id": parameters.get("model"),
+            "prompt_sha256": parameters.get("prompts") or {},
+            "nuwa_method": nuwa_report.get("method"),
+            "nuwa_template_version": parameters.get("nuwa_template_version"),
+        },
+        "budget": {
+            "tokenizer_or_estimator": first_budget.get("estimator"),
+            "context_capacity": first_budget.get("context_capacity"),
+            "capacity_source": first_budget.get("capacity_source"),
+            "capacity_verified": first_budget.get("capacity_verified"),
+            "output_reserve": first_budget.get("output_reserve"),
+            "safety_margin": first_budget.get("safety_margin"),
+            "approximate": first_budget.get("approximate"),
+        },
+        "usage": {"tokens": metadata.get("tokens")},
+        "evidence": {
+            "validated": internal.get("evidence_validated"),
+            "phase4_complete": internal.get("phase4_complete"),
+        },
+        "nuwa": {
+            "status": nuwa_report.get("status"),
+            "format_passed": quality.get("passed"),
+            "semantic_passed": quality.get("semantic_passed"),
+        },
+        "skill_path": skill_path,
+        "gates": canonical.get("gates") or {},
+        "failures": canonical.get("failures") or [],
+        "complete": complete,
+        "optional_unknown": None,
+        "legacy_note": ("缺失字段保持 unknown；sampled 仅为预览。"
+                        if mode == "sampled" else None),
+    }
