@@ -349,12 +349,13 @@ async def estimate(request: Request, cid: int, tier: str = "standard"):
 @router.post("/contacts/{cid}/distill/dry-run")
 async def distill_dry_run(request: Request, cid: int, payload: DistillDryRun):
     s = services(request)
-    person(s.db, cid)
+    contact = person(s.db, cid)
     settings = s.config.get_offline()["llm"]
     settings.update({key: value for key, value in payload.model_dump(exclude_none=True).items()
                      if key in ("model", "thinking", "context_window", "context_window_confirmed", "max_tokens")})
     settings["summary_only"] = not payload.send_raw
     settings["scope"] = payload.scope
+    settings["target_name"] = contact["display_name"] if payload.send_raw else "B"
     result = dry_run_distill(s.db, s.config, s.llm, cid, settings)
     result["distill_mode"] = payload.mode
     return ok(result)

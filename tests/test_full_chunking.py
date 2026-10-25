@@ -185,3 +185,22 @@ async def test_versions_view_exposes_full_and_legacy_sampled_labels(app, importe
         "full", "Chunked", False)
     assert (old["distill_mode"], old["tier"], old["complete"]) == (
         "sampled", "quick", False)
+
+
+async def test_dry_run_uses_same_private_display_name_as_production(app, imported, monkeypatch):
+    from types import SimpleNamespace
+
+    from echotrace.api import routes
+
+    contact_id, _ = imported
+    expected = app.state.db.one("SELECT display_name FROM contacts WHERE id=?", (contact_id,))["display_name"]
+    captured = {}
+
+    def fake_dry_run(_db, _config, _llm, _contact_id, options):
+        captured.update(options)
+        return {"mode": "Whole", "chunks": [], "estimator": {"approximate": True}}
+
+    monkeypatch.setattr(routes, "dry_run_distill", fake_dry_run)
+    await routes.distill_dry_run(SimpleNamespace(app=app), contact_id, routes.DistillDryRun())
+
+    assert captured["target_name"] == expected

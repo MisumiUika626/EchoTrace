@@ -10,7 +10,7 @@ from echotrace.distill.evidence import EvidenceIndex
 from echotrace.distill.extraction import extract
 from echotrace.distill.nuwa import NuwaWorkflow
 from echotrace.distill.persona import person, read_quotes
-from echotrace.distill.planner import budgets_for_views, plan_full_chunks
+from echotrace.distill.planner import PLANNER_VERSION, budgets_for_views, plan_full_chunks
 from echotrace.distill.radar import score, timeline_events
 from echotrace.distill.skill_writer import write_skill
 from echotrace.ingest.canonical import canonical_messages, message_fingerprint, model_message
@@ -102,10 +102,17 @@ def validate_full_coverage(db, contact_id, target, manifest):
     if manifest.get("source_fingerprint") != message_fingerprint(rows):
         invalid("源消息指纹已变化")
     expected = {row["evidence_id"]: model_message(row) for row in rows}
-    covered, order = {}, []
-    for index, filename in enumerate(manifest.get("chunks", [])):
-        descriptor = manifest.get("chunk_descriptors", [])[index]
+    covered, covered_ids, order = {}, set(), []
+    filenames = manifest.get("chunks", [])
+    descriptors = manifest.get("chunk_descriptors", [])
+    if (not filenames or len(filenames) != len(descriptors)
+            or len(set(filenames)) != len(filenames)):
+        invalid("分片清单结构不完整")
+    for index, filename in enumerate(filenames):
+        descriptor = descriptors[index]
         views = read_json(target / "inputs" / filename)
+        if not isinstance(views, list) or not views:
+            invalid("分片输入为空或格式错误")
         new_indexes = descriptor.get("new_indexes", [])
         if not new_indexes or len(set(new_indexes)) != len(new_indexes):
             invalid("分片缺少唯一首次覆盖索引")
@@ -115,8 +122,12 @@ def validate_full_coverage(db, contact_id, target, manifest):
             if position in new_indexes:
                 continue
             source = expected.get(view.get("id"))
-            if source is None or "fragment_index" in view or view != source:
-                invalid("重叠只能复制授权范围内的完整原消息")
+            if (source is None or view.get("id") not in covered_ids
+                    or "fragment_index" in view or view != source):
+                invalid("重叠只能复制授权范围内已首次覆盖的完整原消息")
+        overlap_count = len(views) - len(new_indexes)
+        if overlap_count > 3 or descriptor.get("overlap_messages") != overlap_count:
+            invalid("重叠数量与规划描述不一致")
         for position in new_indexes:
             view = views[position]
             evidence_id = view.get("id")
@@ -126,6 +137,7 @@ def validate_full_coverage(db, contact_id, target, manifest):
             if key in covered:
                 invalid("首次覆盖重复")
             covered[key] = view
+            covered_ids.add(evidence_id)
             order.append((view.get("sequence"), view.get("fragment_index", -1)))
     if order != sorted(order):
         invalid("首次覆盖顺序变化")
@@ -266,8 +278,8 @@ class Pipeline:
         if existing:
             if existing.get("source_revision") != source["revision"]:
                 raise AppError("RESUME_SOURCE_CHANGED", "聊天记录或发言人已变化，旧检查点不能继续。请取消旧任务并重新蒸馏。")
-            if existing.get("planner_version") is None:
-                raise AppError("RESUME_SETTINGS_CHANGED", "完整分片检查点缺少规划器版本，请新建任务。")
+            if existing.get("planner_version") != PLANNER_VERSION:
+                raise AppError("RESUME_SETTINGS_CHANGED", "完整分片检查点的规划器版本已变化，请新建任务。")
             validate_full_coverage(self.db, cid, target, existing)
             return existing
         scope = payload.get("scope") or {}
