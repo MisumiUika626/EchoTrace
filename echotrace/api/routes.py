@@ -3,7 +3,6 @@ import difflib
 import io
 import json
 import os
-import sqlite3
 import uuid
 import webbrowser
 import zipfile
@@ -13,10 +12,11 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from echotrace.distill.persona import active_dir, artifact, person, read_quotes
 from echotrace.distill.dry_run import dry_run_distill
+from echotrace.distill.persona import active_dir, artifact, person, read_quotes
+from echotrace.distill.pipeline import assert_distill_start_allowed
 from echotrace.distill.skill_writer import FILES, install_skill, quality_check
-from echotrace.ingest.cleaner import import_files, preview
+from echotrace.ingest.cleaner import preview
 from echotrace.ingest.qce_client import RELEASES
 from echotrace.llm.client import adapter_parameters
 from echotrace.llm.schemas import SCHEMAS
@@ -46,6 +46,7 @@ class ImportStart(BaseModel):
 
 
 class DistillStart(BaseModel):
+    mode: str = Field(default="full", pattern="^(full|sampled)$")
     consent: bool = False
     nuwa_review: bool = False
     send_raw: bool = True
@@ -57,6 +58,7 @@ class DistillStart(BaseModel):
 
 
 class DistillDryRun(BaseModel):
+    mode: str = Field(default="full", pattern="^(full|sampled)$")
     send_raw: bool = True
     model: str | None = Field(default=None, min_length=1, max_length=200)
     thinking: str | None = Field(default=None, pattern="^(low|medium|high|max)$")
@@ -353,7 +355,9 @@ async def distill_dry_run(request: Request, cid: int, payload: DistillDryRun):
                      if key in ("model", "thinking", "context_window", "context_window_confirmed", "max_tokens")})
     settings["summary_only"] = not payload.send_raw
     settings["scope"] = payload.scope
-    return ok(dry_run_distill(s.db, s.config, s.llm, cid, settings))
+    result = dry_run_distill(s.db, s.config, s.llm, cid, settings)
+    result["distill_mode"] = payload.mode
+    return ok(result)
 
 
 @router.post("/contacts/{cid}/distill")
@@ -366,6 +370,7 @@ async def distill(request: Request, cid: int, payload: DistillStart):
     if not payload.consent:
         raise AppError("CONSENT_REQUIRED", "开始前需明确同意本次向所选模型发送上下文。")
     data = payload.model_dump(exclude_none=True)
+    assert_distill_start_allowed(s.db, s.config, cid, data)
     s.llm.settings(data)
     return ok(s.jobs.create("distill", {**data, "contact_id": cid}))
 

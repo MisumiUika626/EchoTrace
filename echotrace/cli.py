@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--no-auto-import", action="store_true")
     parser.add_argument("--tier", choices=["quick", "standard", "deep"], default="standard")
+    parser.add_argument("--mode", choices=["full", "sampled"], default="full")
     parser.add_argument("--model")
     parser.add_argument("--thinking", choices=["low", "medium", "high", "max"])
     parser.add_argument("--token-limit", type=int, default=500000)
@@ -61,13 +62,14 @@ def main():
         return
     if args.command in ("export", "distill"):
         import httpx
+
         from echotrace.util import dumps
 
         if args.command == "distill":
             if not args.contact or (not args.dry_run and not args.consent):
                 parser.error("distill 需要 --contact；真实蒸馏还需要 --consent")
             path = f"/contacts/{args.contact}/distill" + ("/dry-run" if args.dry_run else "")
-            payload = {"send_raw": not args.summary}
+            payload = {"send_raw": not args.summary, "mode": args.mode}
             if not args.dry_run:
                 payload.update({"consent": True, "tier": args.tier, "token_limit": args.token_limit})
             payload.update({k: v for k, v in (("model", args.model), ("thinking", args.thinking)) if v})

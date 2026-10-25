@@ -1,6 +1,11 @@
 from dataclasses import asdict
 
-from echotrace.distill.pipeline import Pipeline, validate_full_coverage
+from echotrace.distill.pipeline import (
+    Pipeline,
+    assert_distill_start_allowed,
+    resolve_distill_mode,
+    validate_full_coverage,
+)
 from echotrace.distill.planner import plan_full_chunks
 from echotrace.ingest.canonical import canonical_messages
 from echotrace.stats import calculate
@@ -118,3 +123,36 @@ def test_validate_full_coverage_rejects_mutated_fragment(app, imported, tmp_path
         assert error.code == "INVALID_FULL_COVERAGE"
     else:
         raise AssertionError("mutated full input must be rejected")
+
+
+def test_new_mode_is_full_but_missing_legacy_payload_stays_sampled():
+    assert resolve_distill_mode({"mode": "full"}) == "full"
+    assert resolve_distill_mode({"mode": "sampled", "tier": "quick"}) == "sampled"
+    assert resolve_distill_mode({"tier": "deep"}) == "sampled"
+
+
+def test_full_raw_gate_and_sampled_complete_guard_precede_writes(app, imported, tmp_path):
+    contact_id, _ = imported
+    before = app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"]
+    try:
+        assert_distill_start_allowed(app.state.db, app.state.config, contact_id,
+                                     {"mode": "full", "send_raw": False})
+    except AppError as error:
+        assert error.code == "FULL_REQUIRES_RAW_TEXT"
+    else:
+        raise AssertionError("full without raw text must be rejected")
+    target = tmp_path / "complete"
+    write_json(target / "metadata.json", {"complete": True})
+    app.state.db.execute(
+        "INSERT INTO personas(contact_id,version,created_at,model,thinking,token_cost,dir,summary,active) "
+        "VALUES(?,?,?,?,?,?,?,?,1)",
+        (contact_id, 99, 1, "mock", "low", 0, str(target), "future complete"),
+    )
+    try:
+        assert_distill_start_allowed(app.state.db, app.state.config, contact_id,
+                                     {"mode": "sampled", "send_raw": True})
+    except AppError as error:
+        assert error.code == "SAMPLED_CANNOT_REPLACE_COMPLETE"
+    else:
+        raise AssertionError("sampled must not replace complete")
+    assert app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"] == before

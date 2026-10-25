@@ -159,6 +159,28 @@ def validate_full_coverage(db, contact_id, target, manifest):
     return [model_message(row) for row in rows]
 
 
+def resolve_distill_mode(payload):
+    """Missing mode is a persisted pre-upgrade job and must remain sampled."""
+    return payload.get("mode") or "sampled"
+
+
+def _active_complete(db, contact_id):
+    row = db.one("SELECT dir FROM personas WHERE contact_id=? AND active=1", (contact_id,))
+    return bool(row and read_json(Path(row["dir"]) / "metadata.json", {}).get("complete") is True)
+
+
+def assert_distill_start_allowed(db, config, contact_id, payload):
+    mode = resolve_distill_mode(payload)
+    privacy = config.get()["privacy"]
+    raw = bool(payload.get("send_raw", True) and privacy["allow_raw"] and not privacy["summary_only"])
+    if mode == "full" and not raw:
+        raise AppError("FULL_REQUIRES_RAW_TEXT", "full 模式需要授权范围内的完整原文。")
+    if mode == "sampled" and _active_complete(db, contact_id):
+        raise AppError("SAMPLED_CANNOT_REPLACE_COMPLETE",
+                       "sampled 预览不能替换已经 complete 的正式人物版本。")
+    return mode
+
+
 class Pipeline:
     def __init__(self, db, config, jobs, llm):
         self.db, self.config, self.jobs, self.llm = db, config, jobs, llm
@@ -381,6 +403,7 @@ class Pipeline:
         if not payload.get("consent"):
             raise AppError("CONSENT_REQUIRED", "本次蒸馏需要确认发送到所选模型服务。")
         send_raw = bool(payload.get("send_raw", True) and self.config.get()["privacy"]["allow_raw"] and not self.config.get()["privacy"]["summary_only"])
+        distill_mode = assert_distill_start_allowed(self.db, self.config, cid, payload)
         version = payload.get("version")
         if version is None:
             folders = [int(p.name[1:]) for p in (root / "versions").glob("v*") if p.name[1:].isdigit()]
@@ -395,10 +418,8 @@ class Pipeline:
             raise AppError("NOT_ENOUGH_DATA", "至少需要200条消息才能蒸馏。")
         write_json(target / "stats.json", stats)
         recent = await asyncio.to_thread(calculate, self.db, cid, max(stats["first_ts"], stats["last_ts"] - 30 * 86400), stats["last_ts"])
-        full_mode = payload.get("mode") == "full"
+        full_mode = distill_mode == "full"
         if full_mode:
-            if not send_raw:
-                raise AppError("FULL_REQUIRES_RAW_TEXT", "full 模式需要授权范围内的完整原文。")
             manifest = await finish_thread(
                 self.prepare_full, cid, target, payload, stats, settings,
                 contact["display_name"], lambda: self.jobs.check(job_id),
@@ -412,6 +433,8 @@ class Pipeline:
                       "prompts": {name: hashlib.sha256(self.llm.template(name).encode()).hexdigest() for name in
                                   ("distill_chunk", "extract_quotes", "distill_persona", "distill_radar", "distill_skill", "self_style")},
                       "tier": payload.get("tier", "standard")}
+        if "mode" in payload:
+            parameters["distill_mode"] = distill_mode
         parameters["radar_scales"] = self.config.get()["radar"]["scales"]
         parameters = checkpoint_parameters(target / "parameters.json", parameters,
             "续跑参数与检查点不一致。请恢复原参数，或取消任务后新建蒸馏。")
@@ -520,12 +543,21 @@ class Pipeline:
         meta = {"version": version, "source_count": manifest["source_count"], "source_revision": contact["revision"], "sampled": manifest["sampled"], "created_at": now(),
                 "model": settings["model"], "thinking": settings["thinking"], "tokens": self.jobs.get(job_id)["tokens"],
                 "summary_only": not send_raw, "skill_quality_passed": quality["passed"], "job_id": job_id, "nuwa_status": report["status"]}
+        meta.update(distill_mode=distill_mode, coverage_mode=distill_mode,
+                    coverage_ratio=manifest["sampled"] / max(1, manifest["total"]),
+                    first_covered_messages=manifest["sampled"],
+                    first_covered_fragments=sum(manifest.get("fragmented", {}).values()),
+                    fragmented_messages=len(manifest.get("fragmented", {})),
+                    complete_eligible=False, complete=False)
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
         await finish_thread(self.publish, cid, target, meta)
         return {"contact_id": cid, "version": version, "dir": str(root), "quality": quality, "tokens": meta["tokens"], "quotes": len(quotes)}
 
     def publish(self, cid, target, meta):
+        if meta.get("distill_mode") == "sampled" and _active_complete(self.db, cid):
+            raise AppError("SAMPLED_CANNOT_REPLACE_COMPLETE",
+                           "sampled 预览不能替换已经 complete 的正式人物版本。")
         required = ["persona.json", "radar.json", "quotes.jsonl", "skill/SKILL.md", "metrics.json", "self_style.json"]
         if not all((target / filename).exists() for filename in required):
             raise AppError("INCOMPLETE_ARTIFACTS", "蒸馏产物不完整，未发布。")
