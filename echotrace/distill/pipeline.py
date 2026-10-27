@@ -397,6 +397,7 @@ class Pipeline:
                 quality.update(semantic_passed=matches and report["status"] == "passed", nuwa_status=report["status"],
                                validation=report["validation"]["checks"] if matches else [])
                 write_json(target / "skill_quality.json", quality)
+                write_json(target / "skill" / "references" / "skill-quality.json", quality)
         else:
             await finish_thread(EvidenceIndex(target).build, lambda: self.jobs.check(job_id))
             skill, quality, report = await NuwaWorkflow(self.llm, self.jobs, job_id, payload, target, skill_contact,
@@ -407,6 +408,22 @@ class Pipeline:
                 "tokens": self.jobs.get(job_id)["tokens"], "job_id": job_id, "skill_quality_passed": quality["passed"], "skill_only": True, "base_version": payload["base_version"]}
         meta["local_only"] = local_only
         meta["nuwa_status"] = report["status"] if report else "legacy"
+        meta.update(complete_eligible=False, complete=False)
+        formal = read_json(target / "distill_manifest.json")
+        if formal:
+            formal["complete"] = False
+            formal["gates"] = {**(formal.get("gates") or {}), "skill_only_revalidated": False}
+            formal["failures"] = list(dict.fromkeys([
+                *(formal.get("failures") or []),
+                "skill_only 版本必须重新运行 full 才能恢复 complete",
+            ]))
+            formal["nuwa"] = {
+                **(formal.get("nuwa") or {}),
+                "status": meta["nuwa_status"],
+                "format_passed": quality.get("passed"),
+                "semantic_passed": quality.get("semantic_passed"),
+            }
+            write_json(target / "distill_manifest.json", formal)
         write_json(target / "metadata.json", meta)
         self.jobs.check(job_id)
         await finish_thread(self.publish, cid, target, meta)

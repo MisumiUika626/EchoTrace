@@ -194,7 +194,13 @@ async def test_optional_human_checkpoints_resume_without_repeating_completed_rol
 async def test_local_rebuild_cannot_inherit_validation_for_changed_character(app, imported, model):
     cid, _ = imported
     s = app.state
-    await finish(s, s.jobs.create("distill", {"contact_id": cid, "consent": True, "token_limit": 2000000}))
+    await finish(s, s.jobs.create("distill", {
+        "contact_id": cid,
+        "consent": True,
+        "token_limit": 2000000,
+        "mode": "full",
+        "send_raw": True,
+    }))
     source = active_dir(s.db, cid)
     original_report = (source / "nuwa_report.json").read_bytes()
     skill = read_json(source / "skill_model.json")
@@ -208,6 +214,12 @@ async def test_local_rebuild_cannot_inherit_validation_for_changed_character(app
     assert read_json(rebuilt / "skill_quality.json")["semantic_passed"] is False
     assert read_json(rebuilt / "nuwa_report.json")["status"] == "stale"
     assert read_json(rebuilt / "skill/references/nuwa-report.json")["status"] == "stale"
+    assert read_json(rebuilt / "skill/references/skill-quality.json")["semantic_passed"] is False
+    assert read_json(rebuilt / "metadata.json")["complete"] is False
+    assert read_json(rebuilt / "metadata.json")["complete_eligible"] is False
+    assert read_json(rebuilt / "distill_manifest.json")["complete"] is False
+    assert read_json(rebuilt / "distill_manifest.json")["gates"]["skill_only_revalidated"] is False
+    assert read_json(rebuilt / "distill_manifest.json")["nuwa"]["status"] == "stale"
     assert (source / "nuwa_report.json").read_bytes() == original_report
 
 
