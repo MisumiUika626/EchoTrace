@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import httpx
 import pytest
@@ -121,3 +122,58 @@ async def test_fictional_full_closure_publishes_complete_whole_and_chunked(
 
     assert result["status"] == "succeeded", result
     assert_complete_full(active_dir(app.state.db, contact_id), expected_mode, 600)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_simulated_qce_file_lands_in_unified_import_with_completeness_provenance(
+    app, imported, monkeypatch, partial
+):
+    """Catches QCE auto-imports that lose their partial/completeness boundary."""
+    _, path = imported
+    state = app.state
+
+    def transport(request):
+        if request.method == "POST":
+            return httpx.Response(200, json={"data": {"taskId": "phase7-qce"}})
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "status": "completed",
+                    "result": {"filePath": str(path), "partial": partial},
+                }
+            },
+        )
+
+    async def no_socket(*_):
+        return None
+
+    state.qce.transport = httpx.MockTransport(transport)
+    monkeypatch.setattr(state.qce, "watch", no_socket)
+    job = state.jobs.create(
+        "qce_export",
+        {
+            "name": "Phase7 QCE虚构",
+            "peer_uid": "fiction-them",
+            "me": ["fiction-me"],
+            "start": 1_767_220_000,
+            "end": 1_768_220_000,
+            "format": "JSONL",
+        },
+    )
+    await state.jobs.tasks[job["id"]]
+    result = state.jobs.get(job["id"])
+
+    assert result["status"] == "succeeded", result
+    assert Path(result["result"]["file"]) == path
+    source = state.db.one(
+        "SELECT provenance FROM import_sources ORDER BY imported_at DESC LIMIT 1"
+    )
+    assert json.loads(source["provenance"]) == {
+        "kind": "qce",
+        "task_id": "phase7-qce",
+        "partial": partial,
+        "server_completeness_proven": False,
+    }
+    assert result["result"]["partial"] is partial
+    assert result["result"]["serverCompletenessProven"] is False

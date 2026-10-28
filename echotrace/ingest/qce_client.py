@@ -158,7 +158,10 @@ class QCEClient:
         if payload.get("format") == "STREAMING_ZIP" or not payload.get("auto_import", True):
             return {"file": str(path), "partial": bool(result.get("partial")), "serverCompletenessProven": False, "note": "文件已导出；ZIP 请解压后导入其中的 JSONL。"}
         self.jobs.progress(job_id, "导出完成，自动导入中", .85)
+        source_meta = {"kind": "qce", "task_id": task_id, "partial": bool(result.get("partial")),
+                       "server_completeness_proven": False}
         imported = await asyncio.to_thread(import_files, self.db, self.config, [path], payload["name"], payload.get("uin") or uid, payload["me"],
-                                          progress=lambda seen, added: self.jobs.progress(job_id, f"自动导入 {seen} 条", .9))
+                                          progress=lambda seen, added: self.jobs.progress(job_id, f"自动导入 {seen} 条", .9),
+                                          source_meta=source_meta)
         return {**imported, "file": str(path), "partial": bool(result.get("partial")), "serverCompletenessProven": False,
                 "note": "无法证明腾讯服务端记录完整，请结合时间跨度和缺失月份检查。"}
