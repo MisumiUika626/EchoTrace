@@ -482,7 +482,8 @@ class Pipeline:
                 descriptor = manifest["chunk_descriptors"][manifest["chunks"].index(filename)]
                 current = {stage: asdict(budget) for stage, budget in
                            budgets_for_views(self.llm, messages, settings,
-                                             contact["display_name"]).items()}
+                                             contact["display_name"],
+                                             [messages[index]["id"] for index in descriptor["new_indexes"]]).items()}
                 if current != descriptor["stage_budgets"]:
                     raise AppError("PLANNER_REQUEST_MISMATCH",
                                    "完整分片的 Prompt、预算或模型容量已变化，已在发送前停止。")

@@ -71,7 +71,7 @@ async def map_chunk(llm, jobs, job_id, payload, messages, owned_ids, path, finge
     try:
         output = await llm.call(
             "full_map",
-            {"messages": messages},
+            {"messages": messages, "first_coverage_ids": sorted(owned_ids)},
             allowed_ids,
             job_id,
             payload,

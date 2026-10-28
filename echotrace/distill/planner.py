@@ -7,7 +7,7 @@ from echotrace.llm.client import build_request
 from echotrace.llm.tokenizer import count_tokens
 from echotrace.util import AppError
 
-PLANNER_VERSION = "full-open-map-v2"
+PLANNER_VERSION = "full-open-map-v3"
 STAGES = ("full_map", "extract_quotes")
 
 
@@ -27,27 +27,27 @@ class FullPlan:
     planner_version: str = PLANNER_VERSION
 
 
-def stage_context(stage, views, target_name, settings):
+def stage_context(stage, views, target_name, settings, owned_ids=None):
     if stage == "full_map":
-        return {"messages": views}
+        return {"messages": views, "first_coverage_ids": list(owned_ids or [])}
     if stage == "extract_quotes":
         return {"messages": views, "target": "them"}
     raise AppError("INVALID_PROMPT", "完整分片规划只支持观察与语录阶段。")
 
 
-def budgets_for_views(llm, views, settings, target_name):
+def budgets_for_views(llm, views, settings, target_name, owned_ids=None):
     budgets = {}
     content = list(views)
     for stage in STAGES:
-        context = stage_context(stage, content, target_name, settings)
+        context = stage_context(stage, content, target_name, settings, owned_ids)
         request = build_request(llm, stage, settings, context)
         budgets[stage] = plan_request_budget(stage, settings, request, content_value=content)
     return budgets
 
 
-def _fits(llm, views, settings, target_name):
+def _fits(llm, views, settings, target_name, owned_ids=None):
     try:
-        return budgets_for_views(llm, views, settings, target_name)
+        return budgets_for_views(llm, views, settings, target_name, owned_ids)
     except AppError as exc:
         if exc.code != "REQUEST_OVERHEAD_TOO_LARGE":
             raise
@@ -93,7 +93,9 @@ def _largest_new_prefix(llm, overlap, units, start, settings, target_name):
     low, high, best_end, best_budgets = start + 1, len(units), start, None
     while low <= high:
         middle = (low + high) // 2
-        budgets = _fits(llm, [*overlap, *units[start:middle]], settings, target_name)
+        candidate_new = units[start:middle]
+        budgets = _fits(llm, [*overlap, *candidate_new], settings, target_name,
+                        [view["id"] for view in candidate_new])
         if budgets:
             best_end, best_budgets, low = middle, budgets, middle + 1
         else:

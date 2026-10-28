@@ -1,6 +1,11 @@
 from pathlib import Path
 
 import httpx
+import pytest
+
+from echotrace.distill.canonical_skill import REQUIRED_CANONICAL_FILES
+from echotrace.distill.persona import active_dir
+from echotrace.util import read_json
 
 
 def _keys(value):
@@ -62,3 +67,57 @@ async def test_dry_run_closure_reads_no_secret_calls_no_provider_and_writes_no_s
     assert app.state.db.one("SELECT COUNT(*) AS n FROM jobs")["n"] == before_jobs
     assert {path.relative_to(app.state.db.root) for path in app.state.db.root.rglob("*")} == before
     assert not list(Path(app.state.db.root).glob("people/*/versions/*/skill/SKILL.md"))
+
+
+def assert_complete_full(root, expected_mode, expected_messages):
+    manifest = read_json(root / "distill_manifest.json")
+    metadata = read_json(root / "metadata.json")
+
+    assert manifest["mode"] == "full"
+    assert manifest["complete"] is True
+    assert metadata["complete"] is True
+    assert manifest["coverage"]["plan_mode"] == expected_mode
+    assert manifest["coverage"]["total_messages"] == expected_messages
+    assert manifest["coverage"]["first_covered_messages"] == expected_messages
+    assert manifest["coverage"]["chunks_succeeded"] == manifest["coverage"]["chunks"]
+    assert manifest["coverage"]["failed_chunks"] == []
+    assert manifest["evidence"] == {"validated": True, "phase4_complete": True}
+    assert manifest["nuwa"] == {
+        "status": "passed",
+        "format_passed": True,
+        "semantic_passed": True,
+    }
+    assert all(manifest["gates"].values())
+    for relative in REQUIRED_CANONICAL_FILES:
+        path = root / relative
+        assert path.is_file() and path.stat().st_size > 0, relative
+
+
+@pytest.mark.parametrize(
+    ("context_window", "expected_mode"),
+    [(1_000_000, "Whole"), (32_768, "Chunked")],
+)
+async def test_fictional_full_closure_publishes_complete_whole_and_chunked(
+    app, imported, context_window, expected_mode
+):
+    """Catches a planner path that stops before publishing canonical full output."""
+    contact_id, _ = imported
+    app.state.config.update(
+        {"llm": {"context_window": context_window, "context_window_confirmed": True}}
+    )
+
+    job = app.state.jobs.create(
+        "distill",
+        {
+            "contact_id": contact_id,
+            "consent": True,
+            "mode": "full",
+            "send_raw": True,
+            "token_limit": 2_000_000,
+        },
+    )
+    await app.state.jobs.tasks[job["id"]]
+    result = app.state.jobs.get(job["id"])
+
+    assert result["status"] == "succeeded", result
+    assert_complete_full(active_dir(app.state.db, contact_id), expected_mode, 600)
