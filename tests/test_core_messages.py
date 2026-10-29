@@ -194,6 +194,28 @@ def _two_party_rows(first="一", second="二"):
     ]
 
 
+def test_append_rejects_existing_identity_role_swap(tmp_path: Path):
+    from echotrace.ingest.cleaner import import_files
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    _jsonl(first, _two_party_rows())
+    _jsonl(second, [
+        {"msgId": "3", "timestamp": 3, "sender": {"uid": "me", "name": "我"}, "content": "三"},
+        {"msgId": "4", "timestamp": 4, "sender": {"uid": "them", "name": "对方"}, "content": "四"},
+    ])
+    db, config = _store(tmp_path)
+    result = import_files(db, config, [first], "对方", "them", ["me"])
+    before = db.rows("SELECT id,sender,text FROM messages ORDER BY sequence")
+
+    with pytest.raises(AppError) as error:
+        import_files(db, config, [second], "对方", "them", ["them"])
+
+    assert error.value.code == "IDENTITY_CONFLICT"
+    assert db.rows("SELECT id,sender,text FROM messages ORDER BY sequence") == before
+    assert result["report"]["total"] == 2
+
+
 def test_import_preserves_long_text_verbatim(tmp_path: Path):
     from echotrace.ingest.cleaner import import_files
 

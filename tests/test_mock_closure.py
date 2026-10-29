@@ -96,7 +96,7 @@ def assert_complete_full(root, expected_mode, expected_messages):
 
 @pytest.mark.parametrize(
     ("context_window", "expected_mode"),
-    [(1_000_000, "Whole"), (32_768, "Chunked")],
+    [(1_000_000, "Whole"), (40_960, "Chunked")],
 )
 async def test_fictional_full_closure_publishes_complete_whole_and_chunked(
     app, imported, context_window, expected_mode

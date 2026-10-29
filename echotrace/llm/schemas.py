@@ -40,6 +40,7 @@ class Finding(Claim):
     topic: str = Field(min_length=1, max_length=120)
     source_kind: Literal["direct", "reported", "inference"]
     quote: str = Field(default="", max_length=800)
+    timeline_event: bool = False
 
     @model_validator(mode="after")
     def source_marked(self):

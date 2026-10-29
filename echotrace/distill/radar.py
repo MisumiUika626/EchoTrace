@@ -8,7 +8,7 @@ def timeline_events(db, cid, observations):
     """Date events from their source messages, keeping evidence inside this person."""
     events, seen = [], set()
     for item in observations:
-        if item.get("dimension") != "events" or not item.get("evidence"):
+        if not (item.get("dimension") == "events" or item.get("timeline_event") is True) or not item.get("evidence"):
             continue
         ids = list(dict.fromkeys(item["evidence"]))
         rows = db.rows("SELECT m.evidence_id AS id,m.ts FROM messages m JOIN sessions s ON s.id=m.session_id "

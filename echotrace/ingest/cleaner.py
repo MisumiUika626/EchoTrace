@@ -90,6 +90,21 @@ def import_files(db, config, paths, name, uid, me, custom_pattern=None, progress
     seen, added, filtered, repeats, empty, corrupt = 0, 0, 0, 0, 0, 0
     batch, previous = [], None
     mappings = {r["identity"]: r["role"] for r in db.rows("SELECT identity,role FROM speaker_mappings WHERE session_id=?", (sid,))}
+    existing_roles = {}
+    for row in db.rows(
+        "SELECT json_extract(flags,'$.identity') AS identity,sender "
+        "FROM messages WHERE session_id=? AND sender IN ('me','them')",
+        (sid,),
+    ):
+        if row["identity"]:
+            existing_roles.setdefault(row["identity"], set()).add(row["sender"])
+    for identity, roles in existing_roles.items():
+        requested = mappings.get(identity, "me" if identity in identities else "them")
+        if roles != {requested}:
+            raise AppError(
+                "IDENTITY_CONFLICT",
+                "追加导入会改变既有发言人的本人/对方身份；请先使用身份修正功能明确调整。",
+            )
     existing_hashes = {r["hash"] for r in db.rows("SELECT hash FROM messages WHERE session_id=?", (sid,))}
     existing_platform_ids = {
         r["msg_id"] for r in db.rows("SELECT msg_id FROM messages WHERE session_id=? AND msg_id<>''", (sid,))

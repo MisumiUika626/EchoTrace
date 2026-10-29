@@ -17,7 +17,7 @@ export default function App(){
  useEffect(()=>{if(!toast)return;const timer=setTimeout(()=>setToast(''),4500);return()=>clearTimeout(timer)},[toast]);
  function navigate(page:string,cid?:number){location.hash=page+(cid?'/'+cid:'');setMenu(false)}
  function started(job:any){setImportOpen(false);setToast(t.created);contacts.refresh();navigate('jobs')}
- async function showEvidence(cid:number,id:number){setEvidence({loading:true});setEvidenceError('');try{setEvidence(await api(`/contacts/${cid}/messages/${id}`))}catch(e){setEvidenceError((e as Error).message)}}
+ async function showEvidence(cid:number,id:string|number){setEvidence({loading:true});setEvidenceError('');try{setEvidence(await api(`/contacts/${cid}/messages/${id}`))}catch(e){setEvidenceError((e as Error).message)}}
  const nav=[{id:'people',label:t.people,icon:UsersRound},{id:'export',label:t.export,icon:Download},{id:'jobs',label:t.jobs,icon:ListTodo}];
  const filtered=(contacts.data||[]).filter(p=>(p.display_name+p.uid).toLowerCase().includes(query.toLowerCase()));
  const total=(contacts.data||[]).reduce((n,p)=>n+(p.msg_count||0),0);

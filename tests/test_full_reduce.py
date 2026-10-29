@@ -10,6 +10,7 @@ from echotrace.distill.full_reduce import (
     reduce_findings,
     validate_findings,
 )
+from echotrace.distill.radar import timeline_events
 from echotrace.llm.schemas import SCHEMAS
 from echotrace.util import AppError, dumps, read_json
 from test_large_distill import extraction_job
@@ -45,6 +46,16 @@ def test_full_map_accepts_open_topic_and_direct_target_evidence():
     validated = validate_findings(parsed, _messages(), {"m000001", "m000002", "m000003"})
 
     assert validated["findings"][0]["topic"] == "自定义开放主题"
+
+
+def test_open_topic_can_explicitly_feed_timeline(app, imported):
+    cid, _ = imported
+    finding = _finding(timeline_event=True)
+
+    events = timeline_events(app.state.db, cid, [finding])
+
+    assert len(events) == 1
+    assert events[0]["evidence"] == ["m000002"]
 
 
 @pytest.mark.parametrize(

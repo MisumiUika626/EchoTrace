@@ -62,10 +62,14 @@ def plan_request_budget(stage, settings, request, attempt=0, content_value=None)
         desired_output = max(desired_output, minimum_output)
     safety_margin = max(1024, math.ceil(capability.context_window * .01))
     remaining_for_output = capability.context_window - counted.tokens - safety_margin
-    if remaining_for_output < minimum_output:
+    # The first request preserves the stage's declared output target. Explicit
+    # truncation-growth retries may use only the capacity actually left by the
+    # already-minimal leaf; that ceiling is reported to the caller.
+    required_output = desired_output if attempt == 0 else min(desired_output, remaining_for_output)
+    if required_output < minimum_output:
         raise AppError("REQUEST_OVERHEAD_TOO_LARGE",
                        "完整请求（含提示词、schema、证据、输出预留和安全余量）超过上下文窗口。")
-    output_reserve = min(desired_output, remaining_for_output)
+    output_reserve = required_output
     available = capability.context_window - static_tokens - output_reserve - safety_margin
     if available <= 0 or content.tokens > available:
         raise AppError("REQUEST_OVERHEAD_TOO_LARGE",

@@ -93,6 +93,24 @@ def test_message_pagination_no_same_timestamp_loss(app, imported):
     assert len(collected) == 600
 
 
+def test_canonical_evidence_route_returns_consistent_display_identity(app, imported):
+    cid, _ = imported
+    stored = app.state.db.one(
+        "SELECT m.id,m.evidence_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? ORDER BY m.sequence LIMIT 1", (cid,)
+    )
+    with TestClient(app) as client:
+        canonical = client.get(f"/api/contacts/{cid}/messages/{stored['evidence_id']}")
+        legacy = client.get(f"/api/contacts/{cid}/messages/{stored['id']}")
+
+    assert canonical.status_code == legacy.status_code == 200
+    for response in (canonical, legacy):
+        data = response.json()["data"]
+        assert data["message"]["id"] == stored["evidence_id"]
+        assert data["message"]["database_id"] == stored["id"]
+        assert any(item["id"] == stored["evidence_id"] for item in data["context"])
+
+
 async def test_summary_privacy_excludes_raw_chat_and_old_simulation(app, imported, model):
     cid, _ = imported
     s = app.state

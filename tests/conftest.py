@@ -46,7 +46,8 @@ class FakeModel:
             selected = [m for m in messages
                         if m["id"] in first_coverage and m["sender"] in ("them", "B")][:12]
             output = {"findings": [{**claim([m["id"]], m["text"]), "topic": "开放观察",
-                                     "source_kind": "direct", "quote": m["text"]}
+                                     "source_kind": "direct", "quote": m["text"],
+                                     "timeline_event": "周末" in m["text"] or "以后" in m["text"]}
                                     for m in selected], "open_questions": []}
         elif stage == "FullReduce":
             output = {"findings": context["findings"][:24], "contradictions": [],

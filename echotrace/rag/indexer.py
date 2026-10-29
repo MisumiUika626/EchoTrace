@@ -88,9 +88,21 @@ def rebuild(db, config, contact_id, quotes, connection=None):
 
 def from_model(db, contact_id, items, allow_sensitive=False):
     output = []
-    for q in items:
+    for original in items:
+        q = dict(original)
         if q.get("sensitive") and not allow_sensitive:
             continue
+        normalized = []
+        for identifier in q["evidence"]:
+            row = db.one(
+                "SELECT m.evidence_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+                "WHERE s.contact_id=? AND (m.evidence_id=? OR m.id=?)",
+                (contact_id, identifier, identifier),
+            )
+            if not row:
+                raise AppError("INVALID_EVIDENCE", "引用检查失败：引用消息不存在或不属于此人物。")
+            normalized.append(row["evidence_id"])
+        q["evidence"] = normalized
         evidence = set(q["evidence"])
         sources = db.rows("SELECT m.evidence_id AS id,m.sender,m.text FROM messages m JOIN sessions s ON s.id=m.session_id "
                           "WHERE s.contact_id=? AND m.evidence_id IN (" + ",".join("?" for _ in evidence) + ")",

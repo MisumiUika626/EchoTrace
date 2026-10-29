@@ -82,6 +82,30 @@ def test_full_plan_fragments_long_message_with_exact_offsets(app, imported):
     assert all(len(chunk.views) == len(chunk.new_indexes) for chunk in plan.chunks)
 
 
+def test_single_message_fit_uses_same_first_coverage_envelope_as_final_chunk(app, imported):
+    contact_id, _ = imported
+    row = canonical_messages(app.state.db, contact_id)["messages"][0]
+    text = "甲" * 11_388
+    row = {**row, "text": text}
+
+    plan = plan_full_chunks(app.state.llm, [row], _settings(), "B")
+    fragments = [view for chunk in plan.chunks for index, view in enumerate(chunk.views)
+                 if index in chunk.new_indexes]
+
+    assert fragments
+    assert "".join(view["text"] for view in fragments) == text
+
+
+def test_chunk_planner_preserves_full_map_output_target(app, imported):
+    contact_id, _ = imported
+    rows = canonical_messages(app.state.db, contact_id)["messages"]
+
+    plan = plan_full_chunks(app.state.llm, rows, _settings(32_768), "B")
+
+    assert plan.mode == "Chunked"
+    assert all(chunk.budgets["full_map"].output_reserve == 4096 for chunk in plan.chunks)
+
+
 def test_prepare_full_persists_body_free_descriptors_and_validates(app, imported, tmp_path):
     contact_id, _ = imported
     target = tmp_path / "v1"

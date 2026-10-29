@@ -301,12 +301,20 @@ async def messages(request: Request, cid: int, before_ts: int | None = None, bef
 
 
 @router.get("/contacts/{cid}/messages/{mid}")
-async def message_context(request: Request, cid: int, mid: int):
+async def message_context(request: Request, cid: int, mid: str):
     s = services(request)
     context = window(s.db, cid, mid)
-    row = s.db.one("SELECT * FROM messages WHERE id=?", (mid,))
+    row = s.db.one(
+        "SELECT m.* FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? AND (m.evidence_id=? OR m.id=?)",
+        (cid, mid, mid),
+    )
+    if not row:
+        raise AppError("INVALID_EVIDENCE", "消息不属于此人物。")
     row["raw"] = json.loads(row["raw"])
     row["flags"] = json.loads(row["flags"])
+    row["database_id"] = row["id"]
+    row["id"] = row["evidence_id"]
     return ok({"message": row, "context": context})
 
 

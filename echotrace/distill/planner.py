@@ -7,7 +7,7 @@ from echotrace.llm.client import build_request
 from echotrace.llm.tokenizer import count_tokens
 from echotrace.util import AppError
 
-PLANNER_VERSION = "full-open-map-v3"
+PLANNER_VERSION = "full-open-map-v4"
 STAGES = ("full_map", "extract_quotes")
 
 
@@ -60,7 +60,7 @@ def _largest_prefix(llm, base, text, settings, target_name):
         middle = (low + high) // 2
         candidate = {**base, "text": text[:middle], "fragment_index": 999999,
                      "fragment_count": 999999, "fragment_offset": 999999999}
-        if _fits(llm, [candidate], settings, target_name):
+        if _fits(llm, [candidate], settings, target_name, [candidate["id"]]):
             best, low = middle, middle + 1
         else:
             high = middle - 1
@@ -73,7 +73,7 @@ def _largest_prefix(llm, base, text, settings, target_name):
 def _fragment_units(llm, units, settings, target_name):
     result, fragmented = [], {}
     for view in units:
-        if _fits(llm, [view], settings, target_name):
+        if _fits(llm, [view], settings, target_name, [view["id"]]):
             result.append(view)
             continue
         text, pieces, offset = view["text"], [], 0

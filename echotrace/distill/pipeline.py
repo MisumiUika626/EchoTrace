@@ -30,6 +30,13 @@ def checkpoint_parameters(path, current, message):
         # Keep the original identity so partial chunk fingerprints remain usable.
         saved_identity = {key: value for key, value in saved.items() if key != "max_tokens"}
         current_identity = {key: value for key, value in current.items() if key != "max_tokens"}
+        # New prompt stages must not invalidate otherwise compatible legacy checkpoints.
+        # Prompt identities that existed when the checkpoint was written remain strict.
+        if isinstance(saved_identity.get("prompts"), dict) and isinstance(current_identity.get("prompts"), dict):
+            current_prompts = current_identity["prompts"]
+            current_identity["prompts"] = {
+                key: current_prompts.get(key) for key in saved_identity["prompts"]
+            }
         if saved_identity != current_identity:
             raise AppError("RESUME_SETTINGS_CHANGED", message)
         return saved
@@ -555,7 +562,8 @@ class Pipeline:
         index = EvidenceIndex(target, canonical_payloads)
         await finish_thread(index.build, lambda: self.jobs.check(job_id))
         # Preserve the exact packet used by already completed aggregate checkpoints.
-        observations = reduced_observations or read_json(target / "observations.json")
+        observations = (reduced_observations if reduced_observations is not None
+                        else read_json(target / "observations.json"))
         if observations is None:
             observations = await asyncio.to_thread(index.select)
         write_json(target / "observations.json", observations)

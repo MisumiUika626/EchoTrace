@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from echotrace.util import dumps
+from echotrace.distill.pipeline import checkpoint_parameters
 
 
 async def test_custom_resume_budget_is_validated_and_added_exactly(app):
@@ -30,3 +31,13 @@ async def test_custom_resume_budget_is_validated_and_added_exactly(app):
         assert response.status_code == 200
         await asyncio.gather(*list(state.jobs.tasks.values()))
         assert received[-1] == original
+
+
+def test_legacy_checkpoint_ignores_only_new_prompt_identities(tmp_path):
+    path = tmp_path / "parameters.json"
+    saved = {"model": "mock", "max_tokens": 4096, "prompts": {"distill_chunk": "old"}}
+    path.write_text(dumps(saved), encoding="utf-8")
+    current = {**saved, "max_tokens": 8192,
+               "prompts": {"distill_chunk": "old", "full_map": "new", "full_reduce": "new"}}
+
+    assert checkpoint_parameters(path, current, "changed") == saved
