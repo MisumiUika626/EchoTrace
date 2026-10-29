@@ -49,8 +49,23 @@ def test_cli_against_live_local_service(app, imported, model, monkeypatch):
         while not server.started and time.monotonic() < deadline:
             time.sleep(.02)
         assert server.started
+        before_calls = len(model.calls)
+        private_text = app.state.db.one(
+            "SELECT text FROM messages WHERE session_id IN "
+            "(SELECT id FROM sessions WHERE contact_id=?) ORDER BY sequence LIMIT 1",
+            (cid,),
+        )["text"]
+        result = run_cli("distill", "--port", port, "--contact", cid, "--dry-run")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Traceback" not in result.stderr
+        assert private_text not in result.stdout and "fiction-secret" not in result.stdout
+        diagnostic = json.loads(result.stdout)
+        assert diagnostic["mode"] in ("Whole", "Chunked") and diagnostic["chunks"]
+        assert len(model.calls) == before_calls
         result = run_cli("distill", "--port", port, "--contact", cid, "--consent", "--tier", "quick")
         assert result.returncode == 0, result.stderr + result.stdout
+        assert "Traceback" not in result.stderr
+        assert private_text not in result.stdout and "fiction-secret" not in result.stdout
         job = json.loads(result.stdout.splitlines()[-1])
         assert job["status"] == "succeeded" and model.calls
         result = run_cli("export", "--port", port, "--name", "CLI虚构", "--me", "fiction-me",

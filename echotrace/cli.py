@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--file", type=Path)
     parser.add_argument("--name", default="")
     parser.add_argument("--me", default="")
+    parser.add_argument("--encoding", choices=["utf-8", "utf-8-sig", "gbk", "utf-16", "utf-16-le", "utf-16-be"])
     parser.add_argument("--contact", type=int)
     parser.add_argument("--uid", default="")
     parser.add_argument("--peer-uid", default="")
@@ -38,11 +39,13 @@ def main():
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--no-auto-import", action="store_true")
     parser.add_argument("--tier", choices=["quick", "standard", "deep"], default="standard")
+    parser.add_argument("--mode", choices=["full", "sampled"], default="full")
     parser.add_argument("--model")
     parser.add_argument("--thinking", choices=["low", "medium", "high", "max"])
     parser.add_argument("--token-limit", type=int, default=500000)
     parser.add_argument("--summary", action="store_true", help="仅发送匿名统计摘要")
     parser.add_argument("--consent", action="store_true", help="同意本次蒸馏向配置的模型服务商发送上下文")
+    parser.add_argument("--dry-run", action="store_true", help="只在本机计算容量与分片，不读取密钥、不联网、不写人物产物")
     args = parser.parse_args()
     if args.command == "import":
         if not args.file or not args.name or not args.me:
@@ -52,18 +55,23 @@ def main():
         from echotrace.ingest.cleaner import import_files
         from echotrace.util import dumps
         db = Database(args.data_dir)
-        result = import_files(db, Config(db), [args.file], args.name, args.uid or args.name, args.me.split(","))
+        result = import_files(
+            db, Config(db), [args.file], args.name, args.uid or args.name, args.me.split(","), encoding=args.encoding
+        )
         print(dumps(result))
         return
     if args.command in ("export", "distill"):
         import httpx
+
         from echotrace.util import dumps
 
         if args.command == "distill":
-            if not args.contact or not args.consent:
-                parser.error("distill 需要 --contact 与 --consent；请先在设置页配置模型并确认隐私说明")
-            path = f"/contacts/{args.contact}/distill"
-            payload = {"consent": True, "tier": args.tier, "send_raw": not args.summary, "token_limit": args.token_limit}
+            if not args.contact or (not args.dry_run and not args.consent):
+                parser.error("distill 需要 --contact；真实蒸馏还需要 --consent")
+            path = f"/contacts/{args.contact}/distill" + ("/dry-run" if args.dry_run else "")
+            payload = {"send_raw": not args.summary, "mode": args.mode}
+            if not args.dry_run:
+                payload.update({"consent": True, "tier": args.tier, "token_limit": args.token_limit})
             payload.update({k: v for k, v in (("model", args.model), ("thinking", args.thinking)) if v})
         else:
             if not args.name or not args.me or not (args.uid or args.peer_uid) or args.start is None or args.end is None:
@@ -75,6 +83,9 @@ def main():
         try:
             with httpx.Client(base_url=f"http://127.0.0.1:{args.port}/api", timeout=30, trust_env=False) as client:
                 job = response_data(client.post(path, json=payload))
+                if args.command == "distill" and args.dry_run:
+                    print(dumps(job))
+                    return
                 previous = ""
                 while job["status"] in ("queued", "running"):
                     stage = f"{job['id']} · {job['progress']:.0%} · {job['stage']}"

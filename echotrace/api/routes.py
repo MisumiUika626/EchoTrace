@@ -3,7 +3,6 @@ import difflib
 import io
 import json
 import os
-import sqlite3
 import uuid
 import webbrowser
 import zipfile
@@ -13,9 +12,11 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from echotrace.distill.dry_run import dry_run_distill
 from echotrace.distill.persona import active_dir, artifact, person, read_quotes
+from echotrace.distill.pipeline import assert_distill_start_allowed
 from echotrace.distill.skill_writer import FILES, install_skill, quality_check
-from echotrace.ingest.cleaner import import_files, preview
+from echotrace.ingest.cleaner import preview
 from echotrace.ingest.qce_client import RELEASES
 from echotrace.llm.client import adapter_parameters
 from echotrace.llm.schemas import SCHEMAS
@@ -41,9 +42,11 @@ class ImportStart(BaseModel):
     uid: str = Field(default="", max_length=200)
     me: list[str] = Field(min_length=1)
     pattern: str | None = None
+    encoding: str | None = None
 
 
 class DistillStart(BaseModel):
+    mode: str = Field(default="full", pattern="^(full|sampled)$")
     consent: bool = False
     nuwa_review: bool = False
     send_raw: bool = True
@@ -52,6 +55,17 @@ class DistillStart(BaseModel):
     tier: str = Field(default="standard", pattern="^(quick|standard|deep)$")
     scope: dict = {}
     token_limit: int = Field(default=500000, ge=10000, le=100000000)
+
+
+class DistillDryRun(BaseModel):
+    mode: str = Field(default="full", pattern="^(full|sampled)$")
+    send_raw: bool = True
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    thinking: str | None = Field(default=None, pattern="^(low|medium|high|max)$")
+    context_window: int | None = Field(default=None, ge=16384, le=2097152)
+    context_window_confirmed: bool | None = None
+    max_tokens: int | None = Field(default=None, ge=256, le=393216)
+    scope: dict = {}
 
 
 class JobResume(BaseModel):
@@ -211,10 +225,11 @@ async def backup_delete(request: Request, bid: str):
 
 
 @router.post("/import/preview")
-async def import_preview(request: Request, files: list[UploadFile] = File(...), pattern: str | None = Form(None)):
+async def import_preview(request: Request, files: list[UploadFile] = File(...), pattern: str | None = Form(None),
+                         encoding: str | None = Form(None)):
     s = services(request)
     ids, paths = await save_uploads(s, files)
-    result = await asyncio.to_thread(preview, paths, pattern)
+    result = await asyncio.to_thread(preview, paths, pattern, encoding)
     return ok({**result, "upload_ids": ids})
 
 
@@ -227,7 +242,8 @@ async def import_paste(request: Request, payload: dict):
     upload_id = uuid.uuid4().hex
     path = s.db.root / "exports" / "uploads" / (upload_id + ".txt")
     atomic_write(path, text)
-    return ok({**await asyncio.to_thread(preview, [path], payload.get("pattern")), "upload_ids": [upload_id]})
+    return ok({**await asyncio.to_thread(preview, [path], payload.get("pattern"), payload.get("encoding")),
+               "upload_ids": [upload_id]})
 
 
 @router.post("/import/start")
@@ -238,10 +254,13 @@ async def import_start(request: Request, payload: ImportStart):
 
 
 @router.post("/import/file")
-async def import_file(request: Request, files: list[UploadFile] = File(...), name: str = Form(...), me: str = Form(...), uid: str = Form("")):
+async def import_file(request: Request, files: list[UploadFile] = File(...), name: str = Form(...), me: str = Form(...),
+                      uid: str = Form(""), encoding: str | None = Form(None)):
     s = services(request)
-    ids, paths = await save_uploads(s, files)
-    return ok(s.jobs.create("import", {"paths": paths, "name": name, "uid": uid, "me": [x.strip() for x in me.split(",") if x.strip()]}))
+    _ids, paths = await save_uploads(s, files)
+    return ok(s.jobs.create("import", {"paths": paths, "name": name, "uid": uid,
+                                       "me": [x.strip() for x in me.split(",") if x.strip()],
+                                       "encoding": encoding}))
 
 
 @router.get("/contacts")
@@ -275,19 +294,27 @@ async def messages(request: Request, cid: int, before_ts: int | None = None, bef
     if sender:
         conditions.append("m.sender=?")
         args.append(sender)
-    rows = s.db.rows("SELECT m.id,m.msg_id,m.ts,m.sender,m.sender_raw,m.kind,m.text,m.reply_to,m.flags FROM messages m JOIN sessions s ON s.id=m.session_id WHERE " + " AND ".join(conditions) + " ORDER BY m.ts DESC,m.id DESC LIMIT ?", (*args, limit))
+    rows = s.db.rows("SELECT m.id,m.msg_id,m.sequence,m.evidence_id,m.source_index,m.ts,m.sender,m.sender_raw,m.kind,m.text,m.reply_to,m.flags FROM messages m JOIN sessions s ON s.id=m.session_id WHERE " + " AND ".join(conditions) + " ORDER BY m.ts DESC,m.id DESC LIMIT ?", (*args, limit))
     for row in rows:
         row["flags"] = json.loads(row["flags"])
     return ok({"messages": rows[::-1], "next": {"before_ts": rows[-1]["ts"], "before_id": rows[-1]["id"]} if len(rows) == limit else None})
 
 
 @router.get("/contacts/{cid}/messages/{mid}")
-async def message_context(request: Request, cid: int, mid: int):
+async def message_context(request: Request, cid: int, mid: str):
     s = services(request)
     context = window(s.db, cid, mid)
-    row = s.db.one("SELECT * FROM messages WHERE id=?", (mid,))
+    row = s.db.one(
+        "SELECT m.* FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? AND (m.evidence_id=? OR m.id=?)",
+        (cid, mid, mid),
+    )
+    if not row:
+        raise AppError("INVALID_EVIDENCE", "消息不属于此人物。")
     row["raw"] = json.loads(row["raw"])
     row["flags"] = json.loads(row["flags"])
+    row["database_id"] = row["id"]
+    row["id"] = row["evidence_id"]
     return ok({"message": row, "context": context})
 
 
@@ -327,6 +354,21 @@ async def estimate(request: Request, cid: int, tier: str = "standard"):
     return ok(services(request).pipeline.estimate(cid, tier))
 
 
+@router.post("/contacts/{cid}/distill/dry-run")
+async def distill_dry_run(request: Request, cid: int, payload: DistillDryRun):
+    s = services(request)
+    contact = person(s.db, cid)
+    settings = s.config.get_offline()["llm"]
+    settings.update({key: value for key, value in payload.model_dump(exclude_none=True).items()
+                     if key in ("model", "thinking", "context_window", "context_window_confirmed", "max_tokens")})
+    settings["summary_only"] = not payload.send_raw
+    settings["scope"] = payload.scope
+    settings["target_name"] = contact["display_name"] if payload.send_raw else "B"
+    result = dry_run_distill(s.db, s.config, s.llm, cid, settings)
+    result["distill_mode"] = payload.mode
+    return ok(result)
+
+
 @router.post("/contacts/{cid}/distill")
 async def distill(request: Request, cid: int, payload: DistillStart):
     s = services(request)
@@ -337,6 +379,7 @@ async def distill(request: Request, cid: int, payload: DistillStart):
     if not payload.consent:
         raise AppError("CONSENT_REQUIRED", "开始前需明确同意本次向所选模型发送上下文。")
     data = payload.model_dump(exclude_none=True)
+    assert_distill_start_allowed(s.db, s.config, cid, data)
     s.llm.settings(data)
     return ok(s.jobs.create("distill", {**data, "contact_id": cid}))
 
@@ -425,11 +468,18 @@ async def quotes(request: Request, cid: int, q: str = "", topic: str | None = No
 async def quote_add(request: Request, cid: int, payload: dict):
     s = services(request)
     mid = int(payload["message_id"])
+    source = s.db.one(
+        "SELECT m.evidence_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? AND m.id=?", (cid, mid),
+    )
+    if not source:
+        raise AppError("INVALID_EVIDENCE", "消息不属于此人物。")
     context = window(s.db, cid, mid)
-    message = next(m for m in context if m["id"] == mid)
-    qid = stable_id(f"pick:{cid}:{mid}")
+    evidence_id = source["evidence_id"]
+    message = next(m for m in context if m["id"] == evidence_id)
+    qid = stable_id(f"pick:{cid}:{evidence_id}")
     q = {"id": qid, "contact_id": cid, "people_id": cid, "text": message["text"], "start_msg": context[0]["id"], "end_msg": context[-1]["id"],
-         "evidence": [mid], "score": 10, "dims": {"reuse": 10, "emotion": 10, "relation": 10, "info": 10}, "source": "user_pick",
+         "evidence": [evidence_id], "score": 10, "dims": {"reuse": 10, "emotion": 10, "relation": 10, "info": 10}, "source": "user_pick",
          "ts": message["ts"], "speaker": message["sender"], "topic": payload.get("topic", "手动收藏"), "sensitive": False}
     existing = s.db.rows("SELECT * FROM quotes WHERE contact_id=?", (cid,))
     for row in existing:
@@ -513,7 +563,18 @@ async def action_list(request: Request, cid: int):
 
 @router.get("/contacts/{cid}/versions")
 async def versions(request: Request, cid: int):
-    return ok(services(request).db.rows("SELECT * FROM personas WHERE contact_id=? ORDER BY version DESC", (cid,)))
+    rows = services(request).db.rows("SELECT * FROM personas WHERE contact_id=? ORDER BY version DESC", (cid,))
+    for row in rows:
+        metadata = read_json(Path(row["dir"]) / "metadata.json", {})
+        parameters = read_json(Path(row["dir"]) / "parameters.json", {})
+        mode = metadata.get("distill_mode") or "sampled"
+        row.update(distill_mode=mode,
+                   coverage_mode=metadata.get("coverage_mode", mode),
+                   plan_mode=read_json(Path(row["dir"]) / "manifest.json", {}).get("plan_mode"),
+                   tier=parameters.get("tier", "legacy"),
+                   complete=metadata.get("complete") is True,
+                   complete_eligible=metadata.get("complete_eligible") is True)
+    return ok(rows)
 
 
 @router.get("/contacts/{cid}/versions/diff")
@@ -580,7 +641,12 @@ async def job_import(request: Request, job_id: str):
     if path.suffix.lower() == ".zip":
         raise AppError("IMPORT_PARSE_FAILED", "请先手动解压 ZIP，再导入其中的 JSONL 文件。")
     payload = job["payload"]
-    return ok(s.jobs.create("import", {"paths": [str(path)], "name": payload["name"], "uid": payload.get("uin") or payload.get("peer_uid", ""), "me": payload["me"]}))
+    result = job["result"] or {}
+    source_meta = {"kind": "qce", "task_id": payload.get("qce_task_id"), "partial": bool(result.get("partial")),
+                   "server_completeness_proven": False}
+    return ok(s.jobs.create("import", {"paths": [str(path)], "name": payload["name"],
+                                       "uid": payload.get("uin") or payload.get("peer_uid", ""),
+                                       "me": payload["me"], "source_meta": source_meta}))
 
 
 @router.post("/jobs/{job_id}/cancel")

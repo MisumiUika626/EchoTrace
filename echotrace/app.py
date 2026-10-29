@@ -33,8 +33,13 @@ def create_app(data_dir=None, llm_transport=None, qce_transport=None):
     qce = QCEClient(db, config, jobs, qce_transport)
 
     async def run_import(job_id, payload):
-        return await asyncio.to_thread(import_files, db, config, payload["paths"], payload["name"], payload.get("uid", ""), payload["me"], payload.get("pattern"),
-                                       lambda read, added: jobs.progress(job_id, f"已解析 {read:,} 条，新增 {added:,} 条", min(.9, read / (read + 2000))))
+        return await asyncio.to_thread(
+            import_files, db, config, payload["paths"], payload["name"], payload.get("uid", ""), payload["me"],
+            payload.get("pattern"),
+            lambda read, added: jobs.progress(job_id, f"已解析 {read:,} 条，新增 {added:,} 条", min(.9, read / (read + 2000))),
+            payload.get("encoding"),
+            payload.get("source_meta"),
+        )
     jobs.handlers = {"import": run_import, "distill": pipeline.run, "qce_export": qce.export}
 
     async def backups_loop():

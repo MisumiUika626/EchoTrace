@@ -1,22 +1,21 @@
 import asyncio
 import hashlib
 import json
-import math
 import re
 from pathlib import Path
 
 import httpx
 from pydantic import ValidationError
 
-from echotrace.llm.schemas import SCHEMAS
-from echotrace.llm.nuwa_skill import nuwa_instructions
 from echotrace.llm.budget import allowance
+from echotrace.llm.nuwa_skill import nuwa_instructions
+from echotrace.llm.schemas import SCHEMAS
 from echotrace.util import AppError, dumps, now, read_json, write_json
 
 
 def estimate_tokens(value):
-    text = value if isinstance(value, str) else dumps(value)
-    return math.ceil(sum(1 if ord(c) > 127 else .3 for c in text))
+    from echotrace.llm.tokenizer import count_tokens
+    return count_tokens(value).tokens
 
 
 def adapter_parameters(llm):
@@ -37,6 +36,21 @@ def adapter_parameters(llm):
     return result
 
 
+def build_request(llm, stage, settings, context):
+    """Build the exact initial provider request used by planning and live calls."""
+    instruction = nuwa_instructions(stage)
+    messages = ([{"role": "system", "content": instruction}] if instruction else [])
+    messages.append({"role": "user", "content": llm.render(stage, context)})
+    return {
+        "model": settings["model"],
+        "temperature": settings["temperature"],
+        "max_tokens": settings["max_tokens"],
+        "response_format": {"type": "json_object"},
+        "messages": messages,
+        **adapter_parameters(settings),
+    }
+
+
 class LLMClient:
     def __init__(self, config, jobs, transport=None):
         self.config, self.db, self.jobs, self.transport = config, config.db, jobs, transport
@@ -46,7 +60,7 @@ class LLMClient:
     def template(self, name):
         if name not in SCHEMAS:
             raise AppError("INVALID_PROMPT", "未知提示词模板。")
-        candidates = [self.config.prompt_dir() / f"{name}.md", Path.cwd() / "prompts" / f"{name}.md",
+        candidates = [self.config.root / "prompts" / f"{name}.md", Path.cwd() / "prompts" / f"{name}.md",
                       Path(__file__).parents[1] / "templates" / f"{name}.md"]
         for path in candidates:
             if path.exists():
@@ -104,13 +118,12 @@ class LLMClient:
                 errors.append({"index": index, "item": item, "error": detail})
         return {"field": field, "document": document, "errors": errors} if errors else None
 
-    async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None, *, output_growth=False, normalizer=None):
+    async def call(self, stage, context, allowed_ids, job_id=None, override=None, validator=None, *, output_growth=False, normalizer=None,
+                   max_attempts=None):
         settings = self.settings(override)
-        prompt = self.render(stage, context)
         instruction = nuwa_instructions(stage)
-        initial_messages = ([{"role": "system", "content": instruction}] if instruction else []) + [{"role": "user", "content": prompt}]
-        request = {"model": settings["model"], "temperature": settings["temperature"], "max_tokens": settings["max_tokens"],
-                   "response_format": {"type": "json_object"}, "messages": initial_messages, **adapter_parameters(settings)}
+        request = build_request(self, stage, settings, context)
+        initial_messages = request["messages"]
         identity = [stage, context, initial_messages, {k: v for k, v in settings.items()
                     if k not in ("api_key", "max_tokens", "timeout", "context_window", "concurrency")}]
         recovery = self.db.root / "review" / ("repair-" + hashlib.sha256(dumps(identity).encode()).hexdigest() + ".json")
@@ -187,8 +200,11 @@ class LLMClient:
         growth = min(7, max(0, read_json(growth_path, {}).get("growth", 0))) if expand_leaf else 0
         failures = 0
         last_error, raw, last_code = "", "", "LLM_OUTPUT_INVALID"
+        attempt_limit = 10 if expand_leaf else (max_attempts if max_attempts is not None else 3)
+        if attempt_limit < 1:
+            raise ValueError("max_attempts must be positive")
         async with httpx.AsyncClient(timeout=settings["timeout"], transport=self.transport, trust_env=False, follow_redirects=False) as client:
-            for attempt in range(10 if expand_leaf else 3):
+            for attempt in range(attempt_limit):
                 if job_id:
                     self.jobs.check(job_id)
                 request["max_tokens"], input_estimate = allowance(stage, settings, estimate_tokens, request, growth)
@@ -259,7 +275,7 @@ class LLMClient:
                         # leaves grow up to the effective ceiling (at most 8 caps).
                         next_cap, _ = allowance(stage, settings, estimate_tokens, request, growth + 1)
                         if ((stage in ("distill_chunk", "extract_quotes") and not expand_leaf)
-                                or (growth >= 7 if expand_leaf else attempt == 2)
+                                or (growth >= 7 if expand_leaf else attempt == attempt_limit - 1)
                                 or next_cap <= request["max_tokens"]):
                             raise
                         growth += 1
@@ -296,9 +312,9 @@ class LLMClient:
                         async with self.budget_lock:
                             self.reserved[job_id] = max(0, self.reserved.get(job_id, 0) - reservation)
                 failures += 1
-                if failures >= 3:
+                if failures >= min(3, attempt_limit):
                     break
-                if attempt < (9 if expand_leaf else 2):
+                if attempt < attempt_limit - 1:
                     await asyncio.sleep(2 ** (failures - 1))
         if raw:
             suffix = hashlib.sha256(dumps(context).encode()).hexdigest()[:12]

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SECTIONS = ["identity", "language_dna", "emotion", "values", "interaction", "narrative", "advice", "unknowns"]
 RADAR_KEYS = ["affinity", "intimacy", "trust", "dependence", "initiative", "stability", "openness", "progression"]
+EvidenceId = str | int
 
 
 class Record(BaseModel):
@@ -12,7 +13,7 @@ class Record(BaseModel):
 
 class Claim(Record):
     value: str = Field(min_length=1, max_length=600)
-    evidence: list[int] = Field(min_length=1, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=12)
     inferred: bool
     confidence: float = Field(ge=0, le=1)
     note: str = Field(default="", max_length=400)
@@ -33,6 +34,32 @@ class Observation(Claim):
 class Chunk(Record):
     observations: list[Observation] = Field(max_length=24)
     open_questions: list[str] = Field(default_factory=list, max_length=8)
+
+
+class Finding(Claim):
+    topic: str = Field(min_length=1, max_length=120)
+    source_kind: Literal["direct", "reported", "inference"]
+    quote: str = Field(default="", max_length=800)
+    timeline_event: bool = False
+
+    @model_validator(mode="after")
+    def source_marked(self):
+        if self.source_kind in ("reported", "inference") and not self.inferred:
+            raise ValueError("转述和推断必须标明 inferred")
+        if self.source_kind in ("reported", "inference") and not self.note.strip():
+            raise ValueError("转述和推断必须注明来源或推断限制")
+        return self
+
+
+class FullMap(Record):
+    findings: list[Finding] = Field(max_length=32)
+    open_questions: list[str] = Field(default_factory=list, max_length=12)
+
+
+class FullReduce(Record):
+    findings: list[Finding] = Field(max_length=48)
+    contradictions: list[Finding] = Field(default_factory=list, max_length=16)
+    unknowns: list[str] = Field(default_factory=list, max_length=16)
 
 
 class Section(Record):
@@ -58,7 +85,7 @@ class Dimension(Record):
     model_score: float = Field(ge=0, le=100)
     confidence: float = Field(ge=0, le=1)
     trend: Literal["rising", "flat", "falling"]
-    evidence: list[int] = Field(min_length=3, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=3, max_length=12)
     interpretation: str
     conflict_note: str = ""
 
@@ -76,7 +103,7 @@ class Radar(Record):
 
 
 class Quote(Record):
-    evidence: list[int] = Field(min_length=1, max_length=7)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=7)
     text: str = Field(min_length=1, max_length=800)
     topic: str
     reuse: float = Field(ge=0, le=10)
@@ -119,7 +146,7 @@ class Option(Record):
     strategy: Literal["safe", "warm", "honest"]
     text: str = Field(min_length=1)
     why: str
-    evidence: list[int] = Field(min_length=1)
+    evidence: list[EvidenceId] = Field(min_length=1)
     predicted_reaction: str
     risk: Risk
     follow_up: str
@@ -142,11 +169,12 @@ class Advice(Record):
 
 class Chat(Record):
     text: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
     inferred: bool
 
 
-SCHEMAS = {"distill_chunk": Chunk, "distill_persona": Persona, "distill_radar": Radar,
+SCHEMAS = {"distill_chunk": Chunk, "full_map": FullMap, "full_reduce": FullReduce,
+           "distill_persona": Persona, "distill_radar": Radar,
            "extract_quotes": Quotes, "distill_skill": Skill, "self_style": SelfStyle,
            "advise_top3": Advice, "chat_roleplay": Chat}
 
@@ -171,7 +199,7 @@ class NuwaResearch(Record):
 
 class Scenario(Record):
     domain: str = Field(min_length=1)
-    evidence: list[int] = Field(min_length=1, max_length=12)
+    evidence: list[EvidenceId] = Field(min_length=1, max_length=12)
 
 
 class Candidate(MentalModel):
@@ -213,7 +241,7 @@ class NuwaTestPlan(Record):
 class TestAnswer(Record):
     id: str
     text: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
     inferred: bool
 
 
@@ -225,7 +253,7 @@ class TestCheck(Record):
     id: str
     passed: bool
     reason: str
-    evidence: list[int]
+    evidence: list[EvidenceId]
 
 
 class NuwaEvaluation(Record):

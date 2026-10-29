@@ -124,6 +124,22 @@ def test_cached_quotes_revalidated_against_database(app, imported):
     assert error.value.code == "INVALID_EVIDENCE"
 
 
+def test_legacy_numeric_quote_evidence_is_normalized_to_canonical_id(app, imported):
+    from echotrace.rag.indexer import from_model
+
+    cid, _ = imported
+    row = app.state.db.one(
+        "SELECT m.id,m.evidence_id,m.text FROM messages m JOIN sessions s ON s.id=m.session_id "
+        "WHERE s.contact_id=? AND m.sender='them' ORDER BY m.sequence LIMIT 1", (cid,)
+    )
+    quote = {"text": row["text"], "evidence": [row["id"]], "reuse": 1, "emotion": 1,
+             "relation": 1, "info": 1, "topic": "legacy", "sensitive": False}
+
+    result = from_model(app.state.db, cid, [quote])
+
+    assert result[0]["evidence"] == [row["evidence_id"]]
+
+
 def test_single_giant_message_and_style_examples_are_bounded():
     from echotrace.distill.extraction import split_messages
     from echotrace.distill.pipeline import bounded_examples, summary_messages

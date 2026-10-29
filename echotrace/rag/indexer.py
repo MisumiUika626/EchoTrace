@@ -46,13 +46,15 @@ def embed(text, config=None):
 
 
 def window(db, contact_id, message_id):
-    center = db.one("SELECT m.* FROM messages m JOIN sessions s ON s.id=m.session_id WHERE s.contact_id=? AND m.id=?", (contact_id, message_id))
+    center = db.one("SELECT m.* FROM messages m JOIN sessions s ON s.id=m.session_id "
+                    "WHERE s.contact_id=? AND (m.evidence_id=? OR m.id=?)", (contact_id, message_id, message_id))
     if not center:
         raise AppError("INVALID_EVIDENCE", "消息不属于此人物。")
-    sid, ts, mid = center["session_id"], center["ts"], center["id"]
-    before = db.rows("SELECT id,ts,sender,text FROM messages WHERE session_id=? AND (ts<? OR (ts=? AND id<?)) ORDER BY ts DESC,id DESC LIMIT 3", (sid, ts, ts, mid))
-    after = db.rows("SELECT id,ts,sender,text FROM messages WHERE session_id=? AND (ts>? OR (ts=? AND id>?)) ORDER BY ts,id LIMIT 3", (sid, ts, ts, mid))
-    return list(reversed(before)) + [{k: center[k] for k in ("id", "ts", "sender", "text")}] + after
+    sid, sequence = center["session_id"], center["sequence"]
+    before = db.rows("SELECT evidence_id AS id,ts,sender,text FROM messages WHERE session_id=? AND sequence<? ORDER BY sequence DESC LIMIT 3", (sid, sequence))
+    after = db.rows("SELECT evidence_id AS id,ts,sender,text FROM messages WHERE session_id=? AND sequence>? ORDER BY sequence LIMIT 3", (sid, sequence))
+    current = {"id": center["evidence_id"], "ts": center["ts"], "sender": center["sender"], "text": center["text"]}
+    return list(reversed(before)) + [current] + after
 
 
 def rebuild(db, config, contact_id, quotes, connection=None):
@@ -86,12 +88,24 @@ def rebuild(db, config, contact_id, quotes, connection=None):
 
 def from_model(db, contact_id, items, allow_sensitive=False):
     output = []
-    for q in items:
+    for original in items:
+        q = dict(original)
         if q.get("sensitive") and not allow_sensitive:
             continue
+        normalized = []
+        for identifier in q["evidence"]:
+            row = db.one(
+                "SELECT m.evidence_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+                "WHERE s.contact_id=? AND (m.evidence_id=? OR m.id=?)",
+                (contact_id, identifier, identifier),
+            )
+            if not row:
+                raise AppError("INVALID_EVIDENCE", "引用检查失败：引用消息不存在或不属于此人物。")
+            normalized.append(row["evidence_id"])
+        q["evidence"] = normalized
         evidence = set(q["evidence"])
-        sources = db.rows("SELECT m.id,m.sender,m.text FROM messages m JOIN sessions s ON s.id=m.session_id "
-                          "WHERE s.contact_id=? AND m.id IN (" + ",".join("?" for _ in evidence) + ")",
+        sources = db.rows("SELECT m.evidence_id AS id,m.sender,m.text FROM messages m JOIN sessions s ON s.id=m.session_id "
+                          "WHERE s.contact_id=? AND m.evidence_id IN (" + ",".join("?" for _ in evidence) + ")",
                           (contact_id, *evidence))
         if (not evidence or len(sources) != len(evidence) or not q["text"] or
                 any(m["sender"] != "them" or q["text"] not in m["text"] for m in sources)):

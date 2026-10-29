@@ -12,9 +12,14 @@ CREATE TABLE IF NOT EXISTS messages (
  id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), msg_id TEXT,
  sender TEXT NOT NULL CHECK(sender IN ('me','them','system')), sender_raw TEXT,
  ts INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT, reply_to TEXT, raw JSON NOT NULL,
- hash TEXT NOT NULL UNIQUE, flags JSON DEFAULT '{}');
+ hash TEXT NOT NULL UNIQUE, flags JSON DEFAULT '{}', sequence INTEGER, evidence_id TEXT, source_index INTEGER);
 CREATE INDEX IF NOT EXISTS messages_session_time ON messages(session_id,ts,id);
 CREATE INDEX IF NOT EXISTS messages_platform_id ON messages(session_id,msg_id);
+CREATE TABLE IF NOT EXISTS import_sources (
+ id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), file TEXT NOT NULL,
+ sha256 TEXT NOT NULL, messages_sha256 TEXT NOT NULL, encoding TEXT, imported_at INTEGER NOT NULL,
+ provenance JSON NOT NULL DEFAULT '{}',
+ UNIQUE(session_id,sha256));
 CREATE TABLE IF NOT EXISTS speaker_mappings (
  session_id INTEGER NOT NULL REFERENCES sessions(id), identity TEXT NOT NULL, role TEXT NOT NULL,
  PRIMARY KEY(session_id,identity));

@@ -9,7 +9,6 @@ from echotrace.ingest.parsers import TZ
 from echotrace.llm.client import estimate_tokens
 from echotrace.util import dumps, read_json, write_json
 
-
 DIMENSION_FILTERS = {
     "01-persona.md": ("personality", "interests"),
     "02-conversations.md": ("relationship", "emotion"),
@@ -21,8 +20,9 @@ DIMENSION_FILTERS = {
 
 
 class EvidenceIndex:
-    def __init__(self, target):
+    def __init__(self, target, canonical_messages=None):
         self.target, self.path = target, target / "evidence.sqlite"
+        self.canonical_messages = canonical_messages
 
     def build(self, check=lambda: None):
         manifest = read_json(self.target / "manifest.json")
@@ -36,27 +36,34 @@ class EvidenceIndex:
         with closing(sqlite3.connect(staging)) as conn, conn:
             conn.executescript("""
                 CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT);
-                CREATE TABLE messages(id INTEGER PRIMARY KEY, ts INTEGER, payload TEXT);
-                CREATE INDEX message_time ON messages(ts,id);
+                CREATE TABLE messages(id TEXT PRIMARY KEY, sequence INTEGER, ts INTEGER, payload TEXT);
+                CREATE INDEX message_sequence ON messages(sequence,id);
                 CREATE TABLE observations(id TEXT PRIMARY KEY, dimension TEXT, period TEXT, ts INTEGER, payload TEXT);
                 CREATE INDEX observation_group ON observations(dimension,period,ts,id);
             """)
+            if self.canonical_messages is not None:
+                conn.executemany("INSERT INTO messages VALUES(?,?,?,?)",
+                                 ((m["id"], m["sequence"], m["ts"], dumps(m))
+                                  for m in self.canonical_messages))
             for filename in manifest["chunks"]:
                 check()
                 messages = read_json(self.target / "inputs" / filename)
                 lookup = {m["id"]: m for m in messages}
-                conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?)",
-                                 ((m["id"], m["ts"], dumps(m)) for m in messages))
+                if self.canonical_messages is None:
+                    conn.executemany("INSERT OR IGNORE INTO messages VALUES(?,?,?,?)",
+                                     ((m["id"], m.get("sequence", index), m["ts"], dumps(m))
+                                      for index, m in enumerate(messages)))
                 chunk = read_json(self.target / "chunks" / filename)
                 for item in chunk["observations"]:
                     ts = min(lookup[mid]["ts"] for mid in item["evidence"])
                     date = datetime.fromtimestamp(ts, TZ).date().isoformat()
                     observation = {**item, "date": date}
+                    dimension = item.get("dimension", item.get("topic", "open"))
                     # Identical wording at another date/source is a distinct record.
-                    key = hashlib.sha256(dumps([observation["value"], observation["dimension"],
+                    key = hashlib.sha256(dumps([observation["value"], dimension,
                                               sorted(observation["evidence"]), date, observation.get("quote")]).encode()).hexdigest()
                     conn.execute("INSERT OR IGNORE INTO observations VALUES(?,?,?,?,?)",
-                                 (key, item["dimension"], date[:7], ts, dumps(observation)))
+                                 (key, dimension, date[:7], ts, dumps(observation)))
             conn.execute("INSERT INTO metadata VALUES('identity',?)", (identity,))
         staging.replace(self.path)
         with closing(sqlite3.connect(self.path)) as conn:
@@ -95,7 +102,7 @@ class EvidenceIndex:
                 batch = ids[offset:offset + 400]
                 result.extend(json.loads(payload) for (payload,) in conn.execute(
                     "SELECT payload FROM messages WHERE id IN (" + ",".join("?" for _ in batch) + ")", batch))
-        return sorted(result, key=lambda m: (m["ts"], m["id"]))
+        return sorted(result, key=lambda m: (m.get("sequence", 0), m["id"]))
 
     def packet(self, summary_only, dimensions=(), observation_budget=4000, message_budget=6500):
         observations = self.select(dimensions, observation_budget, 70)
